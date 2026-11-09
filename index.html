@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#e2ecdf">
+    <title>MiniWorld</title>
+  </head>
+  <body>
+    <main class="world" id="world">
+      <img class="poster" src="./island-flat.svg" width="1440" height="960" alt="一座漂浮小岛" fetchpriority="high">
+      <div class="viewport" id="viewport"></div>
+
+      <header class="brand">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+          <rect width="40" height="40" rx="13" fill="#345646"/>
+          <path d="M8.5 23.5 16 14l4 5 4-6 7.5 10.5-11.5 7-11.5-7Z" stroke="#f5edc9" stroke-width="1.6" stroke-linejoin="round"/>
+          <path d="M8.5 23.5h23m-15.5 0 4 7 4-7" stroke="#f5edc9" stroke-width="1.35" stroke-linejoin="round"/>
+        </svg>
+        <h1>MiniWorld</h1>
+      </header>
+
+      <div class="world-controls">
+        <button type="button" id="projection-button" aria-pressed="false" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14l3 14H2L5 5Zm4 0-2 14m8-14 2 14M4 11h16"/></svg>
+          透视
+        </button>
+        <button type="button" id="island-switcher" class="island-switcher" aria-haspopup="dialog" disabled>
+          <svg class="island-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 13 6-8 3 4 3-3 6 7-9 6-9-6Zm0 0h18"/></svg>
+          <span id="current-island">平坦岛</span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+        </button>
+      </div>
+      <dialog class="island-dialog" id="island-dialog" aria-labelledby="island-title">
+        <div class="island-dialog-header">
+          <h2 id="island-title">岛屿</h2>
+          <form method="dialog"><button type="submit" aria-label="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button></form>
+        </div>
+        <ul id="island-list" class="island-list"></ul>
+        <p id="island-error" class="build-error" role="status" hidden>保存失败，请重试。</p>
+        <button type="button" id="create-island">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          新建岛屿
+        </button>
+      </dialog>
+
+      <div class="dock">
+        <section class="build-panel" id="build-panel" aria-label="网格建造" hidden>
+          <div class="build-context" id="build-context" hidden>
+            <div class="build-selection">
+              <span id="selected-item"></span>
+              <span id="build-status" role="status"></span>
+            </div>
+            <div class="build-actions">
+              <button type="button" id="move-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"/></svg>
+                移动
+              </button>
+              <button type="button" id="rotate-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 10A7.5 7.5 0 1 0 19 16M20 5v5h-5"/></svg>
+                旋转
+              </button>
+              <button type="button" id="remove-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m4 3v6m2-6v6"/></svg>
+                删除
+              </button>
+              <button type="button" id="cancel-preview" hidden>取消</button>
+            </div>
+          </div>
+          <div class="build-catalog-header">
+            <div class="build-categories" id="build-categories" role="group" aria-label="物件分类"></div>
+            <button type="button" id="finish-build">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+              完成
+            </button>
+          </div>
+          <div class="build-tools" id="build-tools" role="group" aria-label="放置新物件"></div>
+          <p class="build-error" id="build-error" role="status" hidden>保存失败，请重试。</p>
+        </section>
+        <nav class="toolbar" id="explore-toolbar" aria-label="小岛操作">
+          <button type="button" id="build-button" aria-controls="build-panel" aria-expanded="false" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 9 8-4.5M12 12v9M4 7.5l8 4.5m-4-6.8 8 4.6"/></svg>
+            建造
+          </button>
+          <button type="button" id="reset-button" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11a8 8 0 1 1 1.6 5.8M4 5v6h6"/></svg>
+            复位
+          </button>
+        </nav>
+      </div>
+
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
