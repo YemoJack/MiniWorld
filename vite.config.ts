@@ -6,6 +6,7 @@ export default defineConfig(({ command }) => {
   const files = command === 'serve' && existsSync(directory) ? readdirSync(directory) : [];
   return {
     base: './',
+    server: { host: 'localhost', port: 5173, strictPort: true },
     define: { __LOCAL_MODEL_FILES__: JSON.stringify(files) },
   };
 });

@@ -1,4 +1,4 @@
-import { cellAt, type Placement } from './grid';
+import { cellAt, maxBuildElevation, storeyStep, subdivisions, usesFineGrid, type Placement } from './grid';
 import { decorations, type DecorationId } from './world-config';
 
 const storageKey = 'miniworld.placements.v2';
@@ -13,11 +13,31 @@ function isDecoration(value: unknown): value is DecorationId {
   return typeof value === 'string' && Object.hasOwn(decorations, value);
 }
 
-function isPlacement(value: unknown): value is Placement {
-  if (value === null || typeof value !== 'object') return false;
-  const { item, turns, x, z } = value as Partial<Placement>;
-  return isDecoration(item) && typeof turns === 'number' && Number.isInteger(turns) &&
-    turns >= 0 && turns < 4 && Number.isSafeInteger(x) && Number.isSafeInteger(z);
+function readPlacements(values: unknown[]): Placement[] {
+  const placements: Placement[] = [];
+  for (const value of values) {
+    if (value === null || typeof value !== 'object') continue;
+    const { item, turns, x, z, level, elevation, offsetX, offsetZ } = value as Partial<Placement> & { level?: number };
+    if (!isDecoration(item) || typeof turns !== 'number' || !Number.isInteger(turns) ||
+      turns < 0 || turns >= 4 || typeof x !== 'number' || typeof z !== 'number' ||
+      !Number.isSafeInteger(x) || !Number.isSafeInteger(z)) continue;
+    // Keep the world height of existing storeys, including roofs saved before storeys existed.
+    const oldLevel = level ?? (item === 'flatRoof' || item === 'skylight' ? 1 : 0);
+    const height = elevation ?? (Number.isInteger(oldLevel) ? oldLevel * storeyStep : NaN);
+    if (Number.isInteger(height) && height >= 0 && height <= maxBuildElevation) {
+      const placement: Placement = { item, turns, x, z, elevation: height };
+      if (usesFineGrid(item)) {
+        if (typeof offsetX === 'number' && Number.isInteger(offsetX) && Math.abs(offsetX) < subdivisions / 2) {
+          placement.offsetX = offsetX;
+        }
+        if (typeof offsetZ === 'number' && Number.isInteger(offsetZ) && Math.abs(offsetZ) < subdivisions / 2) {
+          placement.offsetZ = offsetZ;
+        }
+      }
+      placements.push(placement);
+    }
+  }
+  return placements;
 }
 
 function readLegacyPlacements(): Placement[] {
@@ -25,7 +45,7 @@ function readLegacyPlacements(): Placement[] {
     const stored = localStorage.getItem(storageKey);
     if (stored !== null) {
       const values: unknown = JSON.parse(stored);
-      return Array.isArray(values) ? values.filter(isPlacement) : [];
+      return Array.isArray(values) ? readPlacements(values) : [];
     }
 
     const legacy: unknown = JSON.parse(localStorage.getItem(previousKey) ?? '{}');
@@ -33,7 +53,7 @@ function readLegacyPlacements(): Placement[] {
     const values = legacy as Record<string, unknown>;
     return previousSlots.flatMap(({ id, x, z }) => {
       const item = values[id];
-      return isDecoration(item) ? [{ ...cellAt(x, z), item, turns: 0 }] : [];
+      return isDecoration(item) ? [{ ...cellAt(x, z), item, turns: 0, elevation: 0 }] : [];
     });
   } catch {
     return [];
@@ -70,7 +90,7 @@ export function readIslands(): IslandState {
           if (ids.has(id)) return false;
           ids.add(id);
           return true;
-        }).map((island) => ({ ...island, placements: island.placements.filter(isPlacement) }));
+        }).map((island) => ({ ...island, placements: readPlacements(island.placements) }));
         if (islands.length) {
           const active = islands.find(({ id }) => id === state.activeId) ?? islands[0];
           return { activeId: active.id, islands };

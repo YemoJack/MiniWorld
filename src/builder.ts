@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
-import { cellAt, cellKey, cellSize, edgeKey, floorHeight, footprint, footprintCells, occupiedSlots, placementCenter,
-  type Cell, type Placement } from './grid';
+import { cellKey, cellSize, cellSlot, elevationUnits, fineCellSize, floorHeight, footprint, footprintCells, maxBuildElevation,
+  neighborCell, occupiedSlots, placementCenter, snapCellAt, storeyStep, subdivisions, usesFineGrid,
+  type Cell, type GridPosition, type Placement } from './grid';
 import { islandRim } from './landscape';
 import { placeModel } from './scenery';
 import { decorations, pondCenter, type DecorationId } from './world-config';
@@ -13,11 +14,20 @@ export type BuildState =
   | { mode: 'selected'; item: DecorationId; blocked: boolean }
   | { mode: 'place' | 'move'; item: DecorationId; target: 'empty' | 'blocked' | 'ready' };
 
-type Draft = { item: DecorationId; turns: number; source?: string; target?: Cell };
+type Draft = { item: DecorationId; turns: number; source?: string; target?: GridPosition };
 const halfCell = cellSize / 2;
 const groundHeight = 0.009;
 const floorTop = groundHeight + floorHeight;
 const gridHeight = floorTop + 0.004;
+
+
+function worldHeight(elevation: number) {
+  return groundHeight + elevation / elevationUnits;
+}
+
+function floorSurface(elevation: number) {
+  return elevation === 0 ? floorTop : worldHeight(elevation);
+}
 const contactTolerance = 0.001;
 
 function overlapsHorizontally(a: THREE.Box3, b: THREE.Box3) {
@@ -101,11 +111,24 @@ export function createBuilder(
   const unavailable = initial.filter(({ item }) => !assets[item]);
   const reserved = new Set(unavailable.flatMap(occupiedSlots));
   const owners = new Map<string, string>();
-  const built = new Map<string, { placement: Placement; model: THREE.Group; bounds: THREE.Box3 }>();
+  const built = new Map<string, { placement: Placement; model: THREE.Group; bounds: THREE.Box3; collision: THREE.Box3 }>();
   const modelBounds = new Map<DecorationId, THREE.Box3>();
+  const structures = new THREE.Group();
+  scene.add(structures);
   const grid = createGrid(available);
   grid.visible = false;
-  scene.add(grid);
+  const lines: number[] = [];
+  for (let i = 1; i < subdivisions; i++) {
+    const line = i * fineCellSize - halfCell;
+    lines.push(line, 0, -halfCell, line, 0, halfCell, -halfCell, 0, line, halfCell, 0, line);
+  }
+  const detailGeometry = new THREE.BufferGeometry();
+  detailGeometry.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
+  const detailGrid = new THREE.LineSegments(detailGeometry, new THREE.LineBasicMaterial({
+    color: 0xe7fff1, transparent: true, opacity: 0.75, depthWrite: false, toneMapped: false,
+  }));
+  detailGrid.visible = false;
+  scene.add(grid, detailGrid);
 
   const fill = new THREE.Mesh(new THREE.PlaneGeometry(), new THREE.MeshBasicMaterial({
     color: 0xffed9b, transparent: true, opacity: 0.42, depthWrite: false, toneMapped: false,
@@ -135,13 +158,13 @@ export function createBuilder(
   scene.add(sourceFill, fill, selectionOutline);
 
   const ghostMaterial = new THREE.MeshBasicMaterial({
-    color: 0xffed9b, transparent: true, opacity: 0.46, depthWrite: false, toneMapped: false,
+    color: 0x9fe9d2, transparent: true, opacity: 0.46, depthWrite: false, toneMapped: false,
   });
   let ghost: THREE.Group | undefined;
   let ghostItem: DecorationId | undefined;
   let enabled = false;
   let dirty = false;
-  let cursor: Cell | undefined;
+  let hovered: string | undefined;
   let selection: string | undefined;
   let draft: Draft | undefined;
 
@@ -153,49 +176,124 @@ export function createBuilder(
       });
   }
 
-  function horizontalBounds(placement: Placement) {
-    const { item, turns } = placement;
-    const center = placementCenter(placement);
-    const asset = assets[item];
-    if (!asset) {
-      const { width, depth } = footprint(placement);
-      return new THREE.Box3(
-        new THREE.Vector3(center.x - width * halfCell, 0, center.z - depth * halfCell),
-        new THREE.Vector3(center.x + width * halfCell, 0, center.z + depth * halfCell),
-      );
-    }
+  function assetBounds(item: DecorationId) {
     let bounds = modelBounds.get(item);
-    if (!bounds) {
-      bounds = new THREE.Box3().setFromObject(asset);
+    if (!bounds && assets[item]) {
+      bounds = new THREE.Box3().setFromObject(assets[item]!);
       modelBounds.set(item, bounds);
     }
-    const scale = decorations[item].scale;
-    const transform = new THREE.Matrix4().makeRotationY(turns * Math.PI / 2)
-      .scale(new THREE.Vector3(scale, scale, scale))
-      .setPosition(center.x, 0, center.z);
-    return bounds.clone().applyMatrix4(transform);
+    return bounds;
   }
+
+  function hasFloor(cell: Cell, elevation: number) {
+    const slot = cellSlot('floor', cell, elevation);
+    return owners.has(slot) || reserved.has(slot);
+  }
+
+  function stairAt(cell: Cell, elevation: number) {
+    const owner = owners.get(cellSlot('object', cell, elevation));
+    const placement = owner ? built.get(owner)?.placement : undefined;
+    return placement?.item === 'stairs' ? placement : undefined;
+  }
+
+  function hasSupport(placement: Placement, cells: Cell[]) {
+    const { item, turns, elevation } = placement;
+    const layer = decorations[item].layer;
+    if (elevation < 0 || elevation > maxBuildElevation ||
+      (item === 'stairs' && elevation + storeyStep > maxBuildElevation)) return false;
+    if (elevation === 0 || layer === 'floor') return true;
+    if (cells.every((cell) => hasFloor(cell, elevation) ||
+      (layer === 'edge' && hasFloor(neighborCell(cell, turns), elevation)))) return true;
+    if (item !== 'stairs') return false;
+
+    // At the upper landing, continue straight or turn back over the previous flight.
+    return stairAt(neighborCell(placement, turns), elevation - storeyStep)?.turns === turns ||
+      stairAt(placement, elevation - storeyStep)?.turns === (turns + 2) % 4;
+  }
+
+  function placementHeight(placement: Placement, allowFutureFloor = false) {
+    const { item, elevation } = placement;
+    const layer = decorations[item].layer;
+    if (layer === 'floor') return floorSurface(elevation) - (assetBounds(item)?.max.y ?? floorHeight);
+    if (elevation > 0 || layer === 'edge' || item === 'steelColumn') return worldHeight(elevation);
+    return allowFutureFloor || touchedCells(placement).some((cell) => hasFloor(cell, elevation))
+      ? floorTop : groundHeight;
+  }
+
+  function placementScale(placement: Placement, height: number) {
+    const scale = decorations[placement.item].scale;
+    if (placement.item !== 'stairs') return new THREE.Vector3(scale, scale, scale);
+    const bounds = assetBounds('stairs')!;
+    return new THREE.Vector3(
+      cellSize / (bounds.max.x - bounds.min.x),
+      (worldHeight(placement.elevation + storeyStep) - height) / (bounds.max.y - bounds.min.y),
+      cellSize / (bounds.max.z - bounds.min.z),
+    );
+  }
+
+  function placementBounds(placement: Placement) {
+    const { item, turns, elevation } = placement;
+    const center = placementCenter(placement);
+    const bounds = assetBounds(item);
+    if (!bounds) {
+      const { width, depth } = footprint(placement);
+      const height = floorSurface(elevation);
+      const layer = decorations[item].layer;
+      return new THREE.Box3(
+        new THREE.Vector3(center.x - width * halfCell, height - floorHeight, center.z - depth * halfCell),
+        new THREE.Vector3(center.x + width * halfCell, layer === 'floor' ? height : worldHeight(elevation + storeyStep), center.z + depth * halfCell),
+      );
+    }
+    const height = placementHeight(placement, true);
+    const transform = new THREE.Matrix4().makeRotationY(turns * Math.PI / 2)
+      .scale(placementScale(placement, height))
+      .setPosition(center.x, height, center.z);
+    const box = bounds.clone().applyMatrix4(transform);
+    if (decorations[item].layer === 'floor') box.min.y = Math.min(box.min.y, floorSurface(elevation) - floorHeight);
+    return box;
+  }
+
+  function touchedCells(placement: Placement, bounds?: THREE.Box3) {
+    if (!usesFineGrid(placement.item) || !assets[placement.item]) return footprintCells(placement);
+    const box = bounds ?? placementBounds(placement);
+    const cells: Cell[] = [];
+    const first = snapCellAt(box.min.x + contactTolerance, box.min.z + contactTolerance, false);
+    const last = snapCellAt(box.max.x - contactTolerance, box.max.z - contactTolerance, false);
+    for (let x = first.x; x <= last.x; x++) {
+      for (let z = first.z; z <= last.z; z++) cells.push({ x, z });
+    }
+    return cells;
+  }
+
+  const unavailableBounds = unavailable.map((placement) => ({ placement, collision: placementBounds(placement) }));
 
   function canPlace(placement: Placement, ignoreOwner?: string) {
     if (!canOccupySlots(placement, ignoreOwner)) return false;
     const layer = decorations[placement.item].layer;
-    if (layer === 'floor') return true;
+    const bounds = placementBounds(placement);
+    const cells = touchedCells(placement, bounds);
+    if (!cells.every((cell) => validCells.has(cellKey(cell))) || !hasSupport(placement, cells)) return false;
 
-    // Reserve the full width of wall segments, including door and window openings.
-    const blockedLayer = layer === 'edge' ? 'object' : 'edge';
-    const bounds = horizontalBounds(placement);
-    for (const [key, entry] of built) {
-      if (key !== ignoreOwner && decorations[entry.placement.item].layer === blockedLayer &&
-        overlapsHorizontally(bounds, entry.bounds)) return false;
+    function collides({ placement: other, collision }: { placement: Placement; collision: THREE.Box3 }) {
+      const otherLayer = decorations[other.item].layer;
+      if (placement.elevation === other.elevation &&
+        (layer === 'floor' || otherLayer === 'floor' || (layer === 'edge' && otherLayer === 'edge'))) return false;
+      return Math.min(bounds.max.y, collision.max.y) - Math.max(bounds.min.y, collision.min.y) > contactTolerance &&
+        overlapsHorizontally(bounds, collision);
     }
-    return !unavailable.some((entry) => decorations[entry.item].layer === blockedLayer &&
-      overlapsHorizontally(bounds, horizontalBounds(entry)));
+
+    for (const [key, entry] of built) {
+      if (key !== ignoreOwner && collides(entry)) return false;
+    }
+    return !unavailableBounds.some(collides);
   }
 
   function index(placement: Placement, model: THREE.Group) {
     const slots = occupiedSlots(placement);
     const key = slots[0];
-    built.set(key, { placement, model, bounds: new THREE.Box3().setFromObject(model) });
+    built.set(key, {
+      placement, model, bounds: new THREE.Box3().setFromObject(model), collision: placementBounds(placement),
+    });
     for (const slot of slots) owners.set(slot, key);
     return key;
   }
@@ -206,17 +304,12 @@ export function createBuilder(
     for (const slot of slots) owners.delete(slot);
   }
 
-  function surfaceHeight(placement: Placement) {
-    if (decorations[placement.item].layer !== 'object') return groundHeight;
-    const onFloor = footprintCells(placement).some((cell) => owners.has(`floor:${cellKey(cell)}`));
-    return groundHeight + (onFloor ? floorHeight : 0);
-  }
-
   function syncElevations() {
     for (const { placement, model, bounds } of built.values()) {
-      const height = surfaceHeight(placement);
+      const height = placementHeight(placement);
       if (model.position.y === height) continue;
       model.position.y = height;
+      model.scale.copy(placementScale(placement, height));
       bounds.setFromObject(model);
     }
   }
@@ -226,8 +319,11 @@ export function createBuilder(
     const { item } = placement;
     const asset = assets[item];
     if (!asset) return false;
-    const model = placeModel(asset, x, surfaceHeight(placement), z, decorations[item].scale, placement.turns * Math.PI / 2);
-    scene.add(model);
+    const height = placementHeight(placement);
+    const model = placeModel(asset, x, height, z, 1, placement.turns * Math.PI / 2);
+    if (decorations[item].layer === 'floor') model.userData.walkableFloor = true;
+    model.scale.copy(placementScale(placement, height));
+    structures.add(model);
     return index(placement, model);
   }
 
@@ -238,34 +334,26 @@ export function createBuilder(
 
   syncElevations();
 
-  function positionFill(mesh: typeof fill, cell: Cell, placement?: Placement) {
-    const center = placement ? placementCenter(placement) : { x: cell.x * cellSize, z: cell.z * cellSize };
-    let { width, depth } = placement ? footprint(placement) : { width: 1, depth: 1 };
-    if (placement && decorations[placement.item].layer === 'edge') {
+  function positionFill(mesh: typeof fill, placement: Placement) {
+    const center = placementCenter(placement);
+    const fine = usesFineGrid(placement.item);
+    let { width, depth }: { width: number; depth: number } = footprint(placement);
+    if (decorations[placement.item].layer === 'edge') {
       if (placement.turns % 2 === 0) depth = 0.24;
       else width = 0.24;
     }
-    // Keep both overlays above the floor surface and below the grid.
-    const height = floorTop + (mesh === sourceFill ? 0.001 : 0.002);
+    const surface = floorSurface(placement.elevation);
+    const height = surface + (mesh === sourceFill ? 0.001 : 0.002);
+    const size = fine ? fineCellSize : cellSize;
+    const margin = fine ? 0.012 : 0.04;
     mesh.position.set(center.x, height, center.z);
-    mesh.scale.set(width * cellSize - 0.04, depth * cellSize - 0.04, 1);
+    mesh.scale.set(width * size - margin, depth * size - margin, 1);
     mesh.visible = true;
-  }
-
-  function ownerAt(cell: Cell) {
-    const key = cellKey(cell);
-    const surface = owners.get(`object:${key}`) ?? owners.get(`floor:${key}`);
-    if (surface) return surface;
-    for (let turns = 0; turns < 4; turns++) {
-      const edge = owners.get(edgeKey(cell, turns));
-      if (edge) return edge;
-    }
   }
 
   function previewPlacement(): Placement | undefined {
     if (!draft?.target) return;
-    const { x, z } = draft.target;
-    return { x, z, item: draft.item, turns: draft.turns };
+    return { ...draft.target, item: draft.item, turns: draft.turns };
   }
 
   function showGhost(placement: Placement) {
@@ -286,7 +374,9 @@ export function createBuilder(
       scene.add(ghost);
       ghostItem = item;
     }
-    ghost.position.set(center.x, surfaceHeight(placement) + 0.004, center.z);
+    const height = placementHeight(placement);
+    ghost.position.set(center.x, height + 0.004, center.z);
+    ghost.scale.copy(placementScale(placement, height));
     ghost.rotation.y = turns * Math.PI / 2;
     ghost.visible = true;
   }
@@ -295,33 +385,37 @@ export function createBuilder(
     fill.visible = false;
     sourceFill.visible = false;
     selectionOutline.visible = false;
+    detailGrid.visible = false;
     if (ghost) ghost.visible = false;
 
-    const owner = draft ? draft.source : selection;
+    const selected = selection ? built.get(selection) : undefined;
+    const owner = draft ? draft.source : selection ?? hovered;
     const entry = owner ? built.get(owner) : undefined;
-    const existing = entry?.placement;
     if (entry) {
-      positionFill(sourceFill, entry.placement, entry.placement);
+      if (draft || selected) positionFill(sourceFill, entry.placement);
       entry.bounds.getCenter(selectionOutline.position);
       entry.bounds.getSize(selectionOutline.scale).addScalar(0.028);
       selectionOutline.visible = true;
     }
 
     if (!draft) {
-      if (cursor && !existing) {
-        fill.material.color.setHex(0xffed9b);
-        positionFill(fill, cursor);
-      }
-      onChange(existing ? { mode: 'selected', item: existing.item, blocked: rotationBlocked } : { mode: 'browse' });
+      onChange(selected ? { mode: 'selected', item: selected.placement.item, blocked: rotationBlocked } : { mode: 'browse' });
       return;
     }
 
     const preview = previewPlacement();
     const ready = preview && canPlace(preview, draft.source);
     if (preview) {
-      fill.material.color.setHex(ready ? 0xffed9b : 0xf08f72);
-      positionFill(fill, preview, preview);
-      if (ready) showGhost(preview);
+      fill.material.color.setHex(ready ? 0x9fe9d2 : 0xf08f72);
+      positionFill(fill, preview);
+      if (usesFineGrid(preview.item) && validCells.has(cellKey(preview))) {
+        detailGrid.position.set(preview.x * cellSize, floorSurface(preview.elevation) + 0.007, preview.z * cellSize);
+        detailGrid.visible = true;
+      }
+      const source = entry?.placement;
+      const unchanged = source?.turns === preview.turns &&
+        occupiedSlots(source)[0] === occupiedSlots(preview)[0];
+      if (ready && !unchanged) showGhost(preview);
     }
     onChange({
       mode: draft.source ? 'move' : 'place',
@@ -337,109 +431,119 @@ export function createBuilder(
     return true;
   }
 
-  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -gridHeight);
-  const groundHit = new THREE.Vector3();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -groundHeight);
+  const planeHit = new THREE.Vector3();
   const boxHit = new THREE.Vector3();
-  function pick(ray: THREE.Ray, offset?: Cell): { owner?: string; cell?: Cell; ground?: THREE.Vector3 } {
-    if (ray.direction.y >= -0.01) return {};
-    const hit = ray.intersectPlane(plane, groundHit);
-    const groundDistance = hit ? ray.origin.distanceToSquared(hit) : Infinity;
-    let sceneryDistance = Infinity;
-    for (const box of obstacles) {
-      if (ray.intersectBox(box, boxHit)) {
-        sceneryDistance = Math.min(sceneryDistance, ray.origin.distanceToSquared(boxHit));
+  const picker = new THREE.Raycaster(undefined, undefined, 0, 12);
+  const wallRim = 0.10;
+
+  function pickSurface(ray: THREE.Ray, ignoreOwner?: string) {
+    picker.ray.copy(ray);
+    const ground = ray.direction.y < 0 ? ray.intersectPlane(plane, planeHit) : null;
+    const groundDistance = ground ? ray.origin.distanceTo(ground) : Infinity;
+    const sceneryDistance = picker.intersectObject(scenery, true)[0]?.distance ?? Infinity;
+    let nearest = Math.min(sceneryDistance, groundDistance);
+    let owner: string | undefined;
+    let point: THREE.Vector3 | undefined;
+    for (const [key, { model, bounds }] of built) {
+      if (key === ignoreOwner || !ray.intersectBox(bounds, boxHit) || ray.origin.distanceTo(boxHit) > nearest) continue;
+      const hit = picker.intersectObject(model, true)[0];
+      if (hit && hit.distance <= nearest) {
+        owner = key;
+        point = hit.point;
+        nearest = hit.distance;
       }
     }
-
-    let nearest = draft ? Math.min(sceneryDistance, groundDistance) : sceneryDistance;
-    let target: string | undefined;
-    for (const [key, { placement, bounds }] of built) {
-      if (offset || (draft && (key === draft.source || decorations[draft.item].layer !== 'object' ||
-        decorations[placement.item].layer !== 'object'))) continue;
-      if (!ray.intersectBox(bounds, boxHit)) continue;
-      const distance = ray.origin.distanceToSquared(boxHit);
-      if (distance < nearest) {
-        target = key;
-        nearest = distance;
-      }
-    }
-
-    const x = hit ? hit.x + (offset?.x ?? 0) : 0;
-    const z = hit ? hit.z + (offset?.z ?? 0) : 0;
-    const cell = hit && onIsland(x, z) && groundDistance <= sceneryDistance + 1e-5
-      ? cellAt(x, z) : undefined;
-    return { owner: target, cell: (target && built.get(target)?.placement) || cell, ground: hit ?? undefined };
+    if (!owner && ground && groundDistance < sceneryDistance && groundDistance <= picker.far &&
+      onIsland(ground.x, ground.z)) point = ground;
+    return { owner, point };
   }
 
-  function setTarget(cell?: Cell) {
-    if (!draft || (draft.target?.x === cell?.x && draft.target?.z === cell?.z)) return;
-    draft.target = cell;
+  function targetOnSurface(ray: THREE.Ray, draft: Draft): GridPosition | undefined {
+    const { owner, point } = pickSurface(ray, draft.source);
+    if (!point) return;
+    const targetLayer = decorations[draft.item].layer;
+    const surface = owner ? built.get(owner) : undefined;
+    if (!surface) return { ...snapCellAt(point.x, point.z, usesFineGrid(draft.item)), elevation: 0 };
+
+    const support = surface.placement;
+    const layer = decorations[support.item].layer;
+    if (layer === 'floor') {
+      if (targetLayer !== 'floor') {
+        const top = floorSurface(support.elevation);
+        if (ray.origin.y <= top || point.y < top - 0.035) return;
+        return { ...snapCellAt(point.x, point.z, usesFineGrid(draft.item)), elevation: support.elevation };
+      }
+
+      // Aim near a slab rim to extend it at the same elevation.
+      const center = placementCenter(support);
+      const dx = point.x - center.x;
+      const dz = point.z - center.z;
+      if (Math.max(Math.abs(dx), Math.abs(dz)) < halfCell * 0.55) return;
+      const turns = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? 1 : 3) : (dz > 0 ? 0 : 2);
+      return { ...neighborCell(support, turns), elevation: support.elevation };
+    }
+
+    if (surface.bounds.max.y - point.y > wallRim) return;
+    if (support.item === 'stairs') {
+      if (targetLayer !== 'floor' && draft.item !== 'stairs') return;
+      const exit = neighborCell(support, (support.turns + 2) % 4);
+      const cell = draft.item === 'stairs' && draft.turns === (support.turns + 2) % 4 ? support : exit;
+      return { x: cell.x, z: cell.z, elevation: support.elevation + storeyStep };
+    }
+    if (targetLayer !== 'floor' || (layer !== 'edge' && support.item !== 'steelColumn')) return;
+
+    // Align the underside of the slab with the top of the support.
+    const elevation = Math.round((surface.bounds.max.y + floorHeight - groundHeight) * elevationUnits);
+    if (layer !== 'edge') return { x: support.x, z: support.z, elevation };
+    const center = placementCenter(support);
+    const axis = support.turns % 2 === 0 ? 'z' : 'x';
+    const offset = point[axis] - center[axis];
+    const side = Math.sign(Math.abs(offset) > 0.012 ? offset : ray.origin[axis] - center[axis]) || 1;
+    const x = axis === 'x' ? center.x + side * halfCell : point.x;
+    const z = axis === 'z' ? center.z + side * halfCell : point.z;
+    return { ...snapCellAt(x, z, false), elevation };
+  }
+
+  function aim(ray: THREE.Ray) {
+    if (!enabled) return;
+    if (!draft) {
+      const { owner } = pickSurface(ray);
+      if (owner === hovered) return;
+      hovered = owner;
+      updatePreview();
+      return;
+    }
+    const next = targetOnSurface(ray, draft);
+    const previous = draft.target;
+    if (next?.x === previous?.x && next?.z === previous?.z && next?.elevation === previous?.elevation &&
+      next?.offsetX === previous?.offsetX && next?.offsetZ === previous?.offsetZ) return;
+    draft.target = next;
     updatePreview();
-  }
-
-  function aim(ray: THREE.Ray, offset?: Cell) {
-    if (draft && (!offset || draft.source)) setTarget(pick(ray, offset).cell);
   }
 
   function activate(ray: THREE.Ray) {
+    aim(ray);
     if (draft) {
-      aim(ray);
       commit();
       return;
     }
-    const { owner } = pick(ray);
-    selection = owner;
-    cursor = owner ? built.get(owner)?.placement : undefined;
+    selection = hovered;
     updatePreview();
   }
 
-  function grab(ray: THREE.Ray) {
-    if (draft) return;
-    const { owner, ground } = pick(ray);
-    const placement = owner ? built.get(owner)?.placement : undefined;
-    if (!owner || !placement || !ground) return;
-    selection = owner;
-    cursor = placement;
-    updatePreview();
-    // Keep the grabbed point in place, even on wide objects or at a shallow camera angle.
-    return { x: placement.x * cellSize - ground.x, z: placement.z * cellSize - ground.z };
-  }
-
-  function finishDrag(ray?: THREE.Ray, offset?: Cell) {
-    if (!draft?.source) return;
-    if (ray && offset) aim(ray, offset);
-    if (!ray || !commit()) cancel();
-  }
-
-  function moveSelection(dx: number, dz: number) {
-    if (!enabled) return;
-    const origin = draft?.target ?? cursor ?? { x: 0, z: 0 };
-    for (let step = 1; step <= Math.max(columns * 2, rows * 2); step++) {
-      const next = { x: origin.x + dx * step, z: origin.z + dz * step };
-      if (Math.abs(next.x) > columns || Math.abs(next.z) > rows) break;
-      if (validCells.has(cellKey(next))) {
-        if (draft) draft.target = next;
-        else {
-          cursor = next;
-          selection = ownerAt(next);
-        }
-        updatePreview();
-        return;
-      }
-    }
-    if (!draft?.target && !cursor && available.length) {
-      if (draft) draft.target = available[0];
-      else {
-        cursor = available[0];
-        selection = ownerAt(cursor);
-      }
-      updatePreview();
-    }
+  function saveChanges() {
+    if (!dirty) return true;
+    const placements = [...built.values()].map(({ placement }) => placement);
+    if (!onSave([...placements, ...unavailable])) return false;
+    dirty = false;
+    return true;
   }
 
   function edit() {
     dirty = true;
     syncElevations();
+    saveChanges();
     onEdit();
     updatePreview();
   }
@@ -449,7 +553,9 @@ export function createBuilder(
     if (!entry || !canPlace(placement, owner)) return false;
     const { x, z } = placementCenter(placement);
     unindex(entry.placement);
-    entry.model.position.set(x, entry.model.position.y, z);
+    const height = placementHeight(placement);
+    entry.model.position.set(x, height, z);
+    entry.model.scale.copy(placementScale(placement, height));
     entry.model.rotation.y = placement.turns * Math.PI / 2;
     return index(placement, entry.model);
   }
@@ -461,7 +567,6 @@ export function createBuilder(
 
     const key = draft.source ? transform(draft.source, placement) : add(placement);
     if (!key) return;
-    cursor = placement;
     if (draft.source) {
       draft = undefined;
       selection = key;
@@ -478,7 +583,6 @@ export function createBuilder(
       cancel();
       return;
     }
-    cursor = undefined;
     selection = undefined;
     draft = { item, turns: 0 };
     updatePreview();
@@ -510,7 +614,6 @@ export function createBuilder(
     placement.z += Math.trunc((before.depth - after.depth) / 2);
     const key = transform(owner, placement);
     if (key) {
-      cursor = placement;
       selection = key;
       edit();
     } else {
@@ -523,27 +626,24 @@ export function createBuilder(
     const entry = owner ? built.get(owner) : undefined;
     if (!entry || draft) return;
     entry.model.removeFromParent();
+    hovered = undefined;
     unindex(entry.placement);
-    cursor = undefined;
     selection = undefined;
     edit();
   }
 
   return {
+    structures,
     setMode(active: boolean) {
-      if (!active && dirty) {
-        const placements = [...built.values()].map(({ placement }) => placement);
-        if (!onSave([...placements, ...unavailable])) return false;
-        dirty = false;
-      }
+      if (!active && !saveChanges()) return false;
       enabled = active;
-      grid.visible = active;
-      cursor = undefined;
+      hovered = undefined;
       selection = undefined;
       draft = undefined;
+      grid.visible = active;
       updatePreview();
       return true;
     },
-    activate, aim, setTarget, grab, finishDrag, moveSelection, place, move, rotate, remove, commit, cancel,
+    activate, aim, place, move, rotate, remove, cancel,
   };
 }

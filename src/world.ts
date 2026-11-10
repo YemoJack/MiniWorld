@@ -3,9 +3,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createBuilder, type BuildState } from './builder';
 import type { Island } from './data';
+import { createDrone, flightKeys } from './drone';
 import type { Placement } from './grid';
+import { createPlayer, walkKeys } from './player';
 import { renderThumbnails } from './thumbnails';
-import { createStructureModels } from './structure-models';
+import { createStructureModels, fitImportedFloor } from './structure-models';
 import { createScenery, type ModelSet } from './scenery';
 import { decorations, localModels, modelUrl, models, type DecorationId, type LocalModelId, type ModelId } from './world-config';
 
@@ -35,6 +37,8 @@ async function loadModels() {
     core,
     Promise.allSettled(local.map(async ([id, file]) => {
       const { scene } = await loader.loadAsync(`${import.meta.env.BASE_URL}local-assets/models/${file}`);
+      // Keep the fence length fitted to one grid edge.
+      if (id === 'picketFence') scene.scale.set(1, 2.15, 1.85);
       return [id, scene] as const;
     })),
   ]);
@@ -42,12 +46,23 @@ async function loadModels() {
   for (const result of optional) {
     if (result.status === 'fulfilled') {
       const [id, model] = result.value;
-      assets[id as LocalModelId] = model;
+      assets[id as LocalModelId] = id === 'flatRoof' || id === 'skylight'
+        ? fitImportedFloor(model, id === 'flatRoof') : model;
     } else {
       console.warn('MiniWorld skipped a local model.', result.reason);
     }
   }
   return assets;
+}
+
+async function loadPlayer() {
+  if (!import.meta.env.DEV || !__LOCAL_MODEL_FILES__.includes('player.glb')) return undefined;
+  try {
+    const { scene, animations } = await new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}local-assets/models/player.glb`);
+    return createPlayer(scene, animations);
+  } catch (error) {
+    console.warn('MiniWorld skipped the local player model.', error);
+  }
 }
 
 export async function createWorld(viewport: HTMLElement, events: WorldEvents, island: Island) {
@@ -58,8 +73,9 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
 
   const renderer = new THREE.WebGLRenderer({ canvas, context: gl, alpha: true, antialias: true });
   let assets: SceneModels;
+  let player: Awaited<ReturnType<typeof loadPlayer>>;
   try {
-    assets = await loadModels();
+    [assets, player] = await Promise.all([loadModels(), loadPlayer()]);
   } catch (error) {
     renderer.dispose();
     renderer.forceContextLoss();
@@ -97,7 +113,19 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
     return { ...stage, builder, cloudOrigins: stage.clouds.map((cloud) => cloud.position.x) };
   }
 
+  const drone = createDrone();
   let stage = createIslandScene(island);
+  stage.scene.add(drone.model);
+  let walking = Boolean(player);
+  let editing = false;
+
+  function preparePlayer(spawn: boolean) {
+    if (!player) return;
+    stage.scene.add(player.model);
+    player.setWorld(stage.scene, [stage.ground, stage.scenery, stage.builder.structures], spawn);
+    if (!walking || editing) player.model.visible = false;
+  }
+  preparePlayer(true);
 
   function disposeIslandScene() {
     const resources = new Set<THREE.BufferGeometry | THREE.Material>();
@@ -126,6 +154,7 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
   controls.maxZoom = 3.5;
   controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
   controls.update();
+  controls.enabled = !walking;
 
   function perspectiveDistance(zoom: number) {
     return orthographic.top / (focalRatio * zoom);
@@ -166,41 +195,82 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
 
   function switchIsland(island: Island) {
     const next = createIslandScene(island);
+    drone.model.removeFromParent();
+    player?.model.removeFromParent();
     disposeIslandScene();
     stage = next;
+    stage.scene.add(drone.model);
+    preparePlayer(true);
     resetCamera();
     renderer.shadowMap.needsUpdate = true;
-    renderer.render(stage.scene, camera);
+    renderer.render(stage.scene, viewCamera());
   }
 
-  let editing = false;
-  function setBuildMode(enabled: boolean) {
-    if (!stage.builder.setMode(enabled)) return false;
-    editing = enabled;
-    if (enabled) canvas.tabIndex = 0;
-    else canvas.removeAttribute('tabindex');
-    canvas.setAttribute('aria-label', enabled ? '建造网格，方向键选格，回车放置，R 键旋转' : '漂浮小岛');
-    if (!enabled) cancelItemPress();
-    canvas.style.cursor = enabled ? 'crosshair' : 'grab';
-    return true;
-  }
-
+  const keys = new Set<string>();
+  const touchKeys = new Set<string>();
   const raycaster = new THREE.Raycaster();
+  const center = new THREE.Vector2();
   const pointer = new THREE.Vector2();
-  const petBounds = new THREE.Sphere(new THREE.Vector3(), 0.71);
+  const petBounds = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0.71);
   const petHit = new THREE.Vector3();
 
-  function pointAt(event: PointerEvent) {
-    const rect = canvas.getBoundingClientRect();
-    pointer.set((event.clientX - rect.left) / rect.width * 2 - 1,
-      1 - (event.clientY - rect.top) / rect.height * 2);
-    raycaster.setFromCamera(pointer, camera);
+  function centerRay() {
+    raycaster.setFromCamera(center, drone.camera);
     return raycaster.ray;
   }
 
-  function pointsAtPet(ray: THREE.Ray) {
+  function aim() {
+    if (!editing) return;
+    stage.builder.aim(centerRay());
+  }
+
+  function viewCamera() {
+    return editing ? drone.camera : walking && player ? player.camera : camera;
+  }
+
+  function updateMode() {
+    controls.enabled = !editing && !walking;
+    clearInput();
+    renderer.shadowMap.needsUpdate = true;
+    canvas.tabIndex = editing || walking ? 0 : -1;
+    canvas.setAttribute('aria-label', editing
+      ? '无人机建造。WASD 移动，E 上升，Q 下降，方向键转向，回车选择或放置，R 旋转。'
+      : walking ? '第三人称角色。WASD 行走，空格跳跃，拖动场景或按方向键转向。' : '漂浮小岛');
+    canvas.style.cursor = 'grab';
+  }
+
+  function setBuildMode(enabled: boolean) {
+    if (!stage.builder.setMode(enabled)) return false;
+    editing = enabled;
+    drone.model.visible = enabled;
+    if (enabled) {
+      if (player) player.model.visible = false;
+      drone.reset();
+      aim();
+    } else {
+      preparePlayer(false);
+    }
+    updateMode();
+    return true;
+  }
+
+  function togglePlayer() {
+    if (!player || editing) return walking;
+    walking = !walking;
+    if (walking) player.resetView();
+    else player.model.visible = false;
+    updateMode();
+    return walking;
+  }
+
+  function pointsAtPet(event: PointerEvent) {
     const { pet, scenery } = stage;
     if (!pet) return false;
+    const rect = canvas.getBoundingClientRect();
+    pointer.set((event.clientX - rect.left) / rect.width * 2 - 1,
+      1 - (event.clientY - rect.top) / rect.height * 2);
+    raycaster.setFromCamera(pointer, viewCamera());
+    const { ray } = raycaster;
     petBounds.center.copy(pet.root.position);
     petBounds.center.y = 0.43 + pet.body.position.y;
     if (!ray.intersectSphere(petBounds, petHit)) return false;
@@ -208,110 +278,101 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
     return !raycaster.intersectObject(scenery).some((hit) => hit.distance < distance);
   }
 
-  canvas.addEventListener('keydown', (event) => {
+  function activate() {
     if (!editing) return;
-    const directions: Record<string, [number, number]> = {
-      ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
-    };
-    if (event.key === 'Enter') {
+    stage.builder.activate(centerRay());
+    aim();
+  }
+
+  function rotate() {
+    stage.builder.rotate();
+    aim();
+  }
+
+  function pressKey(event: KeyboardEvent) {
+    if ((!editing && !walking) || event.ctrlKey || event.metaKey || event.altKey ||
+      (event.target !== canvas && event.target !== document.body)) return;
+    const key = event.key.toLowerCase();
+    if ((editing ? flightKeys : walkKeys).has(key)) {
       event.preventDefault();
-      if (!event.repeat) stage.builder.commit();
-    } else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      keys.add(key);
+    } else if (!editing && key === ' ') {
       event.preventDefault();
-      if (!event.repeat) stage.builder.rotate();
-    } else if (Object.hasOwn(directions, event.key)) {
+      if (!event.repeat) player?.jump();
+    } else if (editing && (key === 'enter' || key === ' ' || key === 'r')) {
       event.preventDefault();
-      const [dx, dz] = directions[event.key];
-      const angle = Math.round(controls.getAzimuthalAngle() / (Math.PI / 2)) * Math.PI / 2;
-      stage.builder.moveSelection(
-        Math.round(dx * Math.cos(angle) + dz * Math.sin(angle)),
-        Math.round(dz * Math.cos(angle) - dx * Math.sin(angle)),
-      );
+      if (event.repeat) return;
+      if (key === 'r') rotate();
+      else activate();
     }
-  });
+  }
+  window.addEventListener('keydown', pressKey);
+  const releaseKey = (event: KeyboardEvent) => keys.delete(event.key.toLowerCase());
+  const clearInput = () => {
+    keys.clear();
+    touchKeys.clear();
+  };
+  window.addEventListener('keyup', releaseKey);
+  window.addEventListener('blur', clearInput);
+  canvas.addEventListener('blur', () => keys.clear());
 
   const down = new Map<number, { x: number; y: number }>();
   const dragThreshold = 6;
   let gesture = false;
-  let itemPress: { id: number; offset: { x: number; z: number }; dragging: boolean } | undefined;
-
-  function cancelItemPress() {
-    if (!itemPress) return false;
-    if (itemPress.dragging) stage.builder.finishDrag();
-    itemPress = undefined;
-    controls.enableRotate = true;
-    gesture = true;
-    return true;
-  }
+  let lookPointer: number | undefined;
 
   canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
-    if (down.size > 0) {
-      gesture = true;
-      cancelItemPress();
-    } else if (editing && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-      const offset = stage.builder.grab(pointAt(event));
-      if (offset) {
-        itemPress = { id: event.pointerId, offset, dragging: false };
-        // OrbitControls still tracks the pointer, so a second touch can take over for pinch zoom.
-        controls.enableRotate = false;
-      }
+    if (down.size) gesture = true;
+    if ((editing || walking) && !down.size) {
+      lookPointer = event.pointerId;
+      canvas.focus({ preventScroll: true });
+      canvas.setPointerCapture(event.pointerId);
     }
     down.set(event.pointerId, { x: event.clientX, y: event.clientY });
     canvas.style.cursor = 'grabbing';
-  }, { capture: true });
-
-  function isOverCanvas(event: PointerEvent) {
-    return document.elementFromPoint(event.clientX, event.clientY) === canvas;
-  }
+  });
 
   canvas.addEventListener('pointermove', (event) => {
     const start = down.get(event.pointerId);
-    if (start) {
-      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > dragThreshold) gesture = true;
-      if (itemPress?.id === event.pointerId && gesture) {
-        if (!itemPress.dragging) itemPress.dragging = stage.builder.move();
-        if (isOverCanvas(event)) stage.builder.aim(pointAt(event), itemPress.offset);
-        else stage.builder.setTarget();
+    if (!start) {
+      if (!editing && !down.size && event.pointerType === 'mouse') {
+        canvas.style.cursor = pointsAtPet(event) ? 'pointer' : 'grab';
       }
-    } else if (event.pointerType === 'mouse' && down.size === 0) {
-      const ray = pointAt(event);
-      if (editing) stage.builder.aim(ray);
-      canvas.style.cursor = editing ? 'crosshair' : pointsAtPet(ray) ? 'pointer' : 'grab';
+      return;
     }
-  });
-  canvas.addEventListener('pointerup', (event) => {
-    const start = down.get(event.pointerId);
-    if (!down.delete(event.pointerId) || !start) return;
-    const overCanvas = isOverCanvas(event);
-    if (itemPress?.id === event.pointerId) {
-      if (itemPress.dragging) {
-        stage.builder.finishDrag(overCanvas ? pointAt(event) : undefined, itemPress.offset);
-      }
-      itemPress = undefined;
-      controls.enableRotate = true;
-    } else if (overCanvas && !gesture && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= dragThreshold) {
-      const ray = pointAt(event);
-      if (editing) stage.builder.activate(ray);
-      else if (pointsAtPet(ray)) stage.pet?.react();
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.hypot(dx, dy) > dragThreshold) gesture = true;
+    if ((editing || walking) && gesture && event.pointerId === lookPointer) {
+      if (editing) drone.turn(dx * 0.005, -dy * 0.005);
+      else player?.turn(dx * 0.005, dy * 0.005);
+      start.x = event.clientX;
+      start.y = event.clientY;
+      aim();
     }
-    if (down.size === 0) gesture = false;
-    canvas.style.cursor = editing ? 'crosshair' : 'grab';
   });
 
-  function cancelPointer(event: PointerEvent) {
-    if (itemPress?.id === event.pointerId) cancelItemPress();
+  function endPointer(event: PointerEvent) {
     down.delete(event.pointerId);
-    if (down.size === 0) {
+    if (event.pointerId === lookPointer) lookPointer = undefined;
+    if (!down.size) {
       gesture = false;
-      canvas.style.cursor = editing ? 'crosshair' : 'grab';
+      canvas.style.cursor = 'grab';
     }
   }
-  canvas.addEventListener('pointercancel', cancelPointer);
-  canvas.addEventListener('lostpointercapture', cancelPointer);
-  canvas.addEventListener('pointerleave', () => {
-    if (editing && down.size === 0) stage.builder.setTarget();
+
+  canvas.addEventListener('pointerup', (event) => {
+    const start = down.get(event.pointerId);
+    const click = start && !gesture && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= dragThreshold &&
+      document.elementFromPoint(event.clientX, event.clientY) === canvas;
+    endPointer(event);
+    if (!click) return;
+    if (editing) activate();
+    else if (pointsAtPet(event)) stage.pet?.react();
   });
+  canvas.addEventListener('pointercancel', endPointer);
+  canvas.addEventListener('lostpointercapture', endPointer);
 
   function resize() {
     const { clientWidth: width, clientHeight: height } = viewport;
@@ -324,6 +385,12 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
     orthographic.top = halfHeight;
     orthographic.bottom = -halfHeight;
     orthographic.updateProjectionMatrix();
+    drone.camera.aspect = aspect;
+    drone.camera.updateProjectionMatrix();
+    if (player) {
+      player.camera.aspect = aspect;
+      player.camera.updateProjectionMatrix();
+    }
     perspective.aspect = aspect;
     perspective.far = perspectiveDistance(controls.minZoom) + 40;
     perspective.updateProjectionMatrix();
@@ -357,19 +424,28 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
       });
     }
     pet?.update(dt, elapsed, motion.matches || editing);
-    renderer.render(scene, camera);
+    if (editing && drone.fly(keys, touchKeys, dt, !motion.matches)) aim();
+    if (!editing && walking && player?.update(keys, touchKeys, dt, !motion.matches)) {
+      renderer.shadowMap.needsUpdate = true;
+    }
+    renderer.render(scene, viewCamera());
   }
 
   function syncAnimation() {
     previousFrame = 0;
+    if (document.hidden) clearInput();
     renderer.setAnimationLoop(document.hidden ? null : frame);
   }
   document.addEventListener('visibilitychange', syncAnimation);
-  renderer.render(stage.scene, camera);
+  updateMode();
+  renderer.render(stage.scene, viewCamera());
   syncAnimation();
 
   canvas.addEventListener('webglcontextlost', () => {
     document.removeEventListener('visibilitychange', syncAnimation);
+    window.removeEventListener('keydown', pressKey);
+    window.removeEventListener('keyup', releaseKey);
+    window.removeEventListener('blur', clearInput);
     renderer.setAnimationLoop(null);
     observer.disconnect();
     controls.dispose();
@@ -385,14 +461,40 @@ export async function createWorld(viewport: HTMLElement, events: WorldEvents, is
     availableDecorations,
     thumbnails: () => thumbnails ??= renderThumbnails(renderer, assets, availableDecorations),
     setBuildMode,
+    hasPlayer: Boolean(player),
+    togglePlayer,
+    jump() {
+      if (walking && !editing) player?.jump();
+    },
+    setMovementKey(key: string, pressed: boolean) {
+      if ((!editing && !walking) || !(editing ? flightKeys : walkKeys).has(key)) return;
+      if (pressed) touchKeys.add(key);
+      else touchKeys.delete(key);
+    },
     switchIsland,
-    place: (id: DecorationId) => stage.builder.place(id),
-    move: () => stage.builder.move(),
-    rotate: () => stage.builder.rotate(),
-    remove: () => stage.builder.remove(),
-    cancel: () => cancelItemPress() || stage.builder.cancel(),
+    place(id: DecorationId) {
+      stage.builder.place(id);
+      aim();
+    },
+    move() {
+      stage.builder.move();
+      aim();
+    },
+    rotate,
+    remove() {
+      stage.builder.remove();
+      aim();
+    },
+    cancel() {
+      const cancelled = stage.builder.cancel();
+      if (cancelled) aim();
+      return cancelled;
+    },
     focusGrid: () => canvas.focus({ preventScroll: true }),
-    reset: resetCamera,
+    reset() {
+      if (walking && player) player.resetView();
+      else resetCamera();
+    },
     toggleProjection,
   };
 }

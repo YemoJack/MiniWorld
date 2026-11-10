@@ -47,6 +47,7 @@ body { margin: 0; }
   position: absolute;
   inset: auto 12px max(25px, env(safe-area-inset-bottom));
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   gap: 10px;
   pointer-events: none;
@@ -167,7 +168,7 @@ button svg {
   gap: 6px;
 }
 
-.build-catalog-header { justify-content: space-between; padding-inline: 4px; margin-bottom: 4px; }
+.build-catalog-header { justify-content: space-between; flex-wrap: wrap; padding-inline: 4px; margin-bottom: 4px; }
 .build-categories { display: flex; align-items: center; gap: 3px; }
 .build-categories button { font-size: 0.8rem; }
 .build-categories button[aria-pressed="true"] { background: #e1e9d9; color: #244638; }
@@ -205,6 +206,64 @@ button svg {
 #build-status { font-size: 0.72rem; font-weight: 400; color: #526257; }
 #build-status:empty { display: none; }
 .build-actions { justify-content: flex-end; flex-wrap: wrap; }
+#flight-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+#flight-hud.is-walking :is(#build-crosshair, .flight-help, .flight-rise:not(.walk-jump)),
+#flight-hud:not(.is-walking) .walk-jump { display: none; }
+#build-crosshair {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  color: #fffbea;
+  filter: drop-shadow(0 1px 2px #182d26);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+#build-crosshair[data-state="ready"] { color: #a8ffea; }
+#build-crosshair[data-state="blocked"] { color: #ffab90; }
+.flight-help {
+  position: absolute;
+  inset: max(76px, env(safe-area-inset-top)) 0 auto;
+  margin: 0 auto;
+  width: fit-content;
+  border-radius: 20px;
+  padding: 7px 12px;
+  background: #fdf9ebd9;
+  font-size: 0.75rem;
+}
+.flight-pad { display: none; }
+@media (pointer: coarse) {
+  .flight-help { display: none; }
+  .flight-pad {
+    position: absolute;
+    top: 55%;
+    display: grid;
+    gap: 3px;
+    pointer-events: auto;
+  }
+  .flight-move {
+    left: max(12px, env(safe-area-inset-left));
+    grid-template-columns: repeat(3, 44px);
+  }
+  .flight-move button:first-child { grid-column: 2; }
+  .flight-move button:nth-child(2) { grid-column: 1; }
+  .flight-rise { right: max(12px, env(safe-area-inset-right)); }
+  .flight-pad button {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+    background: #fdf9ebe8;
+    touch-action: none;
+    user-select: none;
+  }
+}
 .build-actions button, #finish-build { display: inline-flex; align-items: center; gap: 4px; }
 #remove-button { color: #993d32; }
 #finish-build { background: #345646; color: #fff9e8; font-weight: 600; }

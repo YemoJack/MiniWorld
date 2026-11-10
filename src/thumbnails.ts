@@ -47,8 +47,8 @@ export function renderThumbnails<Id extends string>(
         camera.top = span;
         camera.bottom = -span;
         camera.near = 0.001;
-        camera.far = 50;
         camera.position.set(3, 2.4, 5).multiplyScalar(Math.max(span, 0.5)).add(center);
+        camera.far = camera.position.distanceTo(center) + size.length();
         camera.lookAt(center);
         camera.updateProjectionMatrix();
         renderer.setRenderTarget(target);

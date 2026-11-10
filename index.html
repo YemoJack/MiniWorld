@@ -21,6 +21,7 @@
       </header>
 
       <div class="world-controls">
+        <button type="button" id="player-button" aria-pressed="false" hidden>角色</button>
         <button type="button" id="projection-button" aria-pressed="false" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14l3 14H2L5 5Zm4 0-2 14m8-14 2 14M4 11h16"/></svg>
           透视
@@ -45,6 +46,27 @@
           新建岛屿
         </button>
       </dialog>
+
+      <div id="flight-hud" hidden>
+        <svg id="build-crosshair" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M11 7H7v4m14-4h4v4m0 10v4h-4m-10 0H7v-4"/>
+          <circle cx="16" cy="16" r="2"/>
+        </svg>
+        <p class="flight-help">WASD 移动 · E/Q 升降 · 拖动转向 · 点击或回车确认</p>
+        <div class="flight-pad flight-move" role="group" aria-label="移动">
+          <button type="button" data-flight="w" aria-label="前进">↑</button>
+          <button type="button" data-flight="a" aria-label="左移">←</button>
+          <button type="button" data-flight="s" aria-label="后退">↓</button>
+          <button type="button" data-flight="d" aria-label="右移">→</button>
+        </div>
+        <div class="flight-pad flight-rise" role="group" aria-label="无人机升降">
+          <button type="button" data-flight="e" aria-label="上升">⇧</button>
+          <button type="button" data-flight="q" aria-label="下降">⇩</button>
+        </div>
+        <div class="flight-pad flight-rise walk-jump">
+          <button type="button" id="jump-button" aria-label="跳跃">跳</button>
+        </div>
+      </div>
 
       <div class="dock">
         <section class="build-panel" id="build-panel" aria-label="网格建造" hidden>

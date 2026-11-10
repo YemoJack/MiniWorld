@@ -11,6 +11,7 @@ const exploreToolbar = document.querySelector<HTMLElement>('#explore-toolbar')!;
 const buildButton = document.querySelector<HTMLButtonElement>('#build-button')!;
 const resetButton = document.querySelector<HTMLButtonElement>('#reset-button')!;
 const projectionButton = document.querySelector<HTMLButtonElement>('#projection-button')!;
+const playerButton = document.querySelector<HTMLButtonElement>('#player-button')!;
 const panel = document.querySelector<HTMLElement>('#build-panel')!;
 const tools = document.querySelector<HTMLElement>('#build-tools')!;
 const categories = document.querySelector<HTMLElement>('#build-categories')!;
@@ -30,14 +31,32 @@ const rotateButton = document.querySelector<HTMLButtonElement>('#rotate-button')
 const removeButton = document.querySelector<HTMLButtonElement>('#remove-button')!;
 const cancelButton = document.querySelector<HTMLButtonElement>('#cancel-preview')!;
 const finishButton = document.querySelector<HTMLButtonElement>('#finish-build')!;
+const flightHud = document.querySelector<HTMLElement>('#flight-hud')!;
+const jumpButton = document.querySelector<HTMLButtonElement>('#jump-button')!;
+const crosshair = document.querySelector<SVGSVGElement>('#build-crosshair')!;
 
 let world: Awaited<ReturnType<typeof createWorld>> | undefined;
 let editing = false;
+let walking = false;
 let islands = readIslands();
 let active = islands.islands.find(({ id }) => id === islands.activeId)!;
 let category: 'all' | DecorationCategory = 'all';
 let available = new Set<DecorationId>();
 let thumbnailsReady = false;
+
+for (const button of flightHud.querySelectorAll<HTMLButtonElement>('[data-flight]')) {
+  const key = button.dataset.flight!;
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    button.setPointerCapture(event.pointerId);
+    world?.setMovementKey(key, true);
+  });
+  const release = () => world?.setMovementKey(key, false);
+  button.addEventListener('pointerup', release);
+  button.addEventListener('pointercancel', release);
+  button.addEventListener('lostpointercapture', release);
+}
 
 const icons: Record<DecorationId, string> = {
   floor: 'm3 10 9-5 9 5-9 5-9-5Zm0 0v4l9 5 9-5v-4M6 8l9 5m-5-7 9 5',
@@ -52,6 +71,24 @@ const icons: Record<DecorationId, string> = {
   bench: 'M4 5h16v6H4zm-2 8h20v3H2zm3 3v4m14-4v4',
   planter: 'M4 12h16l-2 7H6l-2-7Zm8 0V5m0 4C8 9 7 7 7 5c3 0 5 2 5 4Zm0 0c4 0 5-2 5-4-3 0-5 2-5 4Z',
   cafeCounter: 'M3 9h18v3H3zm2 3v8h14v-8M9 9V4h6v3h-3m-4 8h8',
+  gazebo: 'M2 10 12 3l10 7H2Zm3 0v10m14-10v10M3 20h18',
+  picketFence: 'M5 20V7l2-3 2 3v13m6 0V7l2-3 2 3v13M3 10h18M3 16h18',
+  halfWall: 'M3 10h18v10H3zm0 5h18m-12-5v5m6 0v5',
+  glassWall: 'M4 3h16v18H4zm3 11 6-6m-3 9 6-6',
+  glassDoor: 'M5 21V3h14v18M8 6h8v9H8zm5 12h3',
+  shopWindow: 'M3 5h18v14H3zm9 0v14M3 15h18',
+  rollerShutter: 'M3 21V4h18v17M3 8h18M3 12h18M3 16h18m-12 4h6',
+  shopfront: 'M2 6h20l-2 5H4L2 6Zm2 5v10h16V11M8 21v-6h4v6',
+  steelColumn: 'M7 4h10v3H7zm3 3v10m4-10v10m-7 0h10v3H7z',
+  stairs: 'M3 20v-4h6v-5h6V6h6v14H3Z',
+  flatRoof: 'm3 12 9-6 9 6-9 6-9-6Zm0 0v3l9 6 9-6v-3',
+  skylight: 'm3 12 9-6 9 6-9 6-9-6Zm5-3 8 6m0-6-8 6',
+  cafeChair: 'M5 3h3v10h10v3H5V3Zm2 13v5m9-5v5',
+  cafeTable: 'M3 7h18v3H3zm9 3v10m-5 0h10',
+  flowerPot: 'M5 10h14l-2 10H7L5 10Zm7 0V4m0 3L8 4m4 3 4-3',
+  pathLight: 'M8 5h8v5H8zm2 5v10m4-10v10m-6 0h8',
+  trashBin: 'M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13',
+  treeStump: 'M5 8c0-2 3-4 7-4s7 2 7 4-3 4-7 4-7-2-7-4Zm0 0v8c0 2 3 4 7 4s7-2 7-4V8m-9 0h4',
 };
 
 const toolButtons = (Object.keys(decorations) as DecorationId[]).map((id) => {
@@ -130,10 +167,12 @@ function persistIslands(next: IslandState) {
 }
 
 function saveIsland(id: string, placements: Placement[]) {
-  return persistIslands({
+  const saved = persistIslands({
     ...islands,
     islands: islands.islands.map((island) => island.id === id ? { ...island, placements } : island),
   });
+  saveError.hidden = saved;
+  return saved;
 }
 
 function showIsland() {
@@ -182,6 +221,7 @@ showIsland();
 function showBuildState(state: BuildState) {
   const selected = state.mode === 'selected';
   const preview = state.mode === 'place' || state.mode === 'move';
+  crosshair.dataset.state = preview ? state.target : selected ? 'ready' : 'empty';
   context.hidden = state.mode === 'browse';
   selectedItem.textContent = state.mode === 'browse' ? '' : decorations[state.item].label;
   moveButton.hidden = !selected;
@@ -189,13 +229,21 @@ function showBuildState(state: BuildState) {
   cancelButton.hidden = !preview;
   status.textContent = preview
     ? state.target === 'blocked' ? '位置不可用' : state.target === 'empty'
-      ? state.mode === 'move' ? '点选目标格' : '点格放置'
+      ? '瞄准建造表面'
       : ''
     : selected && state.blocked ? '旋转空间不足' : '';
 
   for (const { id, button } of toolButtons) {
     button.setAttribute('aria-pressed', String(state.mode === 'place' && state.item === id));
   }
+}
+
+function updateViewControls() {
+  flightHud.hidden = !editing && !walking;
+  flightHud.classList.toggle('is-walking', walking && !editing);
+  playerButton.hidden = editing || !world?.hasPlayer;
+  playerButton.setAttribute('aria-pressed', String(walking));
+  projectionButton.hidden = editing || walking;
 }
 
 function setEditing(next: boolean) {
@@ -207,18 +255,33 @@ function setEditing(next: boolean) {
   editing = next;
   saveError.hidden = true;
   panel.hidden = !editing;
+  updateViewControls();
   exploreToolbar.hidden = editing;
   buildButton.setAttribute('aria-expanded', String(editing));
   if (editing) {
     showThumbnails();
     world.focusGrid();
-  } else buildButton.focus();
+  } else if (walking) world.focusGrid();
+  else buildButton.focus();
   return true;
 }
 
 buildButton.addEventListener('click', () => setEditing(true));
 finishButton.addEventListener('click', () => setEditing(false));
-resetButton.addEventListener('click', () => world?.reset());
+resetButton.addEventListener('click', () => {
+  world?.reset();
+  if (walking) world?.focusGrid();
+});
+jumpButton.addEventListener('click', () => {
+  world?.jump();
+  world?.focusGrid();
+});
+playerButton.addEventListener('click', () => {
+  if (!world) return;
+  walking = world.togglePlayer();
+  updateViewControls();
+  if (walking) world.focusGrid();
+});
 projectionButton.addEventListener('click', () => {
   if (!world) return;
   projectionButton.setAttribute('aria-pressed', String(world.toggleProjection()));
@@ -245,6 +308,7 @@ page.addEventListener('keydown', (event) => {
 
 function showPoster() {
   editing = false;
+  walking = false;
   world = undefined;
   page.classList.remove('is-ready');
   buildButton.disabled = true;
@@ -253,14 +317,21 @@ function showPoster() {
   islandButton.disabled = false;
   buildButton.setAttribute('aria-expanded', 'false');
   panel.hidden = true;
+  updateViewControls();
   exploreToolbar.hidden = false;
 }
 
 async function start() {
   try {
     const { createWorld } = await import('./world');
-    world = await createWorld(viewport, { buildState: showBuildState, save: saveIsland, unavailable: showPoster }, active);
+    world = await createWorld(viewport, {
+      buildState: showBuildState,
+      save: saveIsland,
+      unavailable: showPoster,
+    }, active);
     available = new Set(world.availableDecorations);
+    walking = world.hasPlayer;
+    updateViewControls();
     updateCatalog();
     islandButton.disabled = false;
     buildButton.disabled = false;

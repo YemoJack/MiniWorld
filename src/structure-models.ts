@@ -1,5 +1,29 @@
 import * as THREE from 'three';
-import { cellSize, floorHeight } from './grid';
+import { cellSize, floorHeight, wallHeight as height } from './grid';
+
+export function fitImportedFloor(asset: THREE.Group, stone: boolean) {
+  const bounds = new THREE.Box3().setFromObject(asset);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const floor = new THREE.Group();
+  const surface = new THREE.Group();
+  surface.scale.set(cellSize / size.x, stone ? 1 : floorHeight / size.y, cellSize / size.z);
+  surface.position.set(-center.x * surface.scale.x, floorHeight - bounds.max.y * surface.scale.y,
+    -center.z * surface.scale.z);
+  surface.add(asset);
+  floor.add(surface);
+
+  if (stone) {
+    // The ceiling asset supplies the textured top; close the sides and underside.
+    const geometry = new THREE.BoxGeometry(cellSize, floorHeight, cellSize);
+    geometry.setIndex(Array.from(geometry.index!.array).filter((_, i) => i < 12 || i >= 18));
+    geometry.clearGroups();
+    const slab = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x9b9280, roughness: 0.86 }));
+    slab.position.y = floorHeight / 2;
+    floor.add(slab);
+  }
+  return floor;
+}
 
 export function createStructureModels() {
   const box = new THREE.BoxGeometry();
@@ -26,7 +50,6 @@ export function createStructureModels() {
     addBox(floor, material, 0, floorHeight * 3 / 4, z, cellSize, floorHeight / 2, boardWidth - 0.008);
   });
 
-  const height = 1.12;
   const post = 0.055;
   const span = cellSize - post * 2;
   const depth = 0.076;
@@ -79,5 +102,27 @@ export function createStructureModels() {
   }
   addBox(windowWall, trim, 0, (sill + windowTop) / 2, 0, 0.028, windowTop - sill, 0.071);
 
-  return { floor, wall, doorway, windowWall };
+  const steps = 10;
+  const rise = 0.6 / steps;
+  const halfRun = cellSize / 2;
+  const width = cellSize;
+  const profile = new THREE.Shape();
+  profile.moveTo(halfRun, 0);
+  for (let i = 0; i < steps; i++) {
+    const z = halfRun - i * cellSize / steps;
+    const y = (i + 1) * rise;
+    profile.lineTo(z, y);
+    profile.lineTo(z - cellSize / steps, y);
+  }
+  profile.lineTo(-halfRun, 0.6 - rise);
+  profile.closePath();
+  const stairGeometry = new THREE.ExtrudeGeometry(profile, { depth: width, bevelEnabled: false });
+  stairGeometry.rotateY(-Math.PI / 2);
+  stairGeometry.translate(width / 2, 0, 0);
+  const stairs = new THREE.Group();
+  const treads = new THREE.Mesh(stairGeometry, wood);
+  treads.userData.walkableRamp = true;
+  stairs.add(treads);
+
+  return { floor, wall, doorway, windowWall, stairs };
 }

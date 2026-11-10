@@ -44,12 +44,15 @@ export function createScenery(models: ModelSet, terrain: Island['terrain']) {
   const scenery = new THREE.Group();
   const pond = flat ? undefined : createPond();
   const pet = flat ? undefined : createPet();
-  scene.add(createIsland(flat), scenery, ...clouds);
-  if (!pond || !pet) return { scene, scenery, pet, pond, clouds, sun };
+  const ground = new THREE.Group();
+  ground.add(createIsland(flat));
+  scene.add(ground, scenery, ...clouds);
+  if (!pond || !pet) return { scene, ground, scenery, pet, pond, clouds, sun };
 
   const cabin = placeModel(models.cabin, -1.0, -0.03, -1.95, 0.58, 0.04);
   scenery.add(cabin);
-  scene.add(createPath(), pond.group, pet.root);
+  ground.add(createPath());
+  scene.add(pond.group, pet.root);
 
   const placements: [ModelId, number, number, number, number, number?][] = [
     ['pine', -4.55, -0.03, -1.46, 0.36, 0.48],
@@ -70,5 +73,5 @@ export function createScenery(models: ModelSet, terrain: Island['terrain']) {
     scenery.add(placeModel(models[id], x, y, z, scale, angle));
   }
 
-  return { scene, scenery, pet, pond, clouds, sun };
+  return { scene, ground, scenery, pet, pond, clouds, sun };
 }
