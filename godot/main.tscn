@@ -1,8 +1,8 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://cewp0mfkr1l30"]
 
-[ext_resource type="Script" path="res://godot/main.gd" id="1"]
+[ext_resource type="Script" uid="uid://c5w8arxuslek5" path="res://godot/main.gd" id="1"]
 [ext_resource type="PackedScene" path="res://godot/player.tscn" id="2"]
-[ext_resource type="Script" path="res://godot/hud.gd" id="3"]
+[ext_resource type="Script" uid="uid://b2ke6fyqerln3" path="res://godot/hud.gd" id="3"]
 [ext_resource type="PackedScene" path="res://assets/islands/cabin.tscn" id="4"]
 [ext_resource type="PackedScene" path="res://assets/islands/clouds.tscn" id="5"]
 
@@ -13,36 +13,37 @@ ambient_light_source = 2
 ambient_light_color = Color(0.97, 0.95, 0.87, 1)
 ambient_light_energy = 0.36
 
-[node name="MiniWorld" type="Node3D"]
+[node name="MiniWorld" type="Node3D" unique_id=644793017]
 script = ExtResource("1")
 
-[node name="Island" type="Node3D" parent="."]
+[node name="Island" type="Node3D" parent="." unique_id=2033613596]
 
-[node name="CabinIsland" parent="Island" instance=ExtResource("4")]
+[node name="CabinIsland" parent="Island" unique_id=892570606 instance=ExtResource("4")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.015793324, -0.026532888, 0.007888675)
 
-[node name="Clouds" parent="." instance=ExtResource("5")]
+[node name="Clouds" parent="." unique_id=1571396459 instance=ExtResource("5")]
 
-[node name="Environment" type="WorldEnvironment" parent="."]
+[node name="Environment" type="WorldEnvironment" parent="." unique_id=1854944590]
 environment = SubResource("IslandEnvironment")
 
-[node name="Sun" type="DirectionalLight3D" parent="."]
-rotation = Vector3(-0.9075712, -0.6283185, 0)
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=747961427]
+transform = Transform3D(0.809017, 0.46318108, -0.36187676, 0, 0.6156615, 0.7880107, 0.58778524, -0.63751405, 0.4980806, 0, 0, 0)
 light_color = Color(1, 0.95, 0.85, 1)
 light_energy = 0.66
 shadow_enabled = true
 directional_shadow_max_distance = 38.0
 
-[node name="Structures" type="Node3D" parent="."]
+[node name="Structures" type="Node3D" parent="." unique_id=236889905]
 
-[node name="Player" parent="." instance=ExtResource("2")]
+[node name="Player" parent="." unique_id=539939132 instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.02, 2.8)
 
-[node name="Overview" type="Camera3D" parent="."]
-position = Vector3(9.562, 7.496, 14.133)
-rotation = Vector3(-0.445, 0.595, 0)
+[node name="Overview" type="Camera3D" parent="." unique_id=772029758]
+transform = Transform3D(0.8281485, -0.24127541, 0.5059212, 0, 0.90261066, 0.43045786, -0.5605088, -0.356483, 0.74749565, 9.562, 7.496, 14.133)
 projection = 1
 size = 12.663
 
-[node name="BuildCamera" type="Camera3D" parent="."]
+[node name="BuildCamera" type="Camera3D" parent="." unique_id=988115802]
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="HUD" type="CanvasLayer" parent="." unique_id=307653879]
 script = ExtResource("3")

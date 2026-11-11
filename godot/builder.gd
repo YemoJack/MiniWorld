@@ -1,6 +1,7 @@
 extends RefCounted
 
 const Catalog = preload("res://godot/catalog.gd")
+const Door = preload("res://godot/build_door.gd")
 const CELL := Catalog.CELL
 const GROUND := Catalog.GROUND
 const SLAB := Catalog.SLAB
@@ -13,17 +14,18 @@ var catalog: Catalog
 var container: Node3D
 var rim: PackedVector2Array
 var has_pond := false
+var harbor_water: Rect2
 var obstacles: Array[AABB]
 var placements: Array
 var bodies: Array[StaticBody3D]
+var doors: Array[Door]
 var occupied: Dictionary
 var walk_shape: CollisionShape3D
 
 
-func _init(assets: Catalog, root: Node3D, island_rim: PackedVector2Array) -> void:
+func _init(assets: Catalog, root: Node3D) -> void:
 	catalog = assets
 	container = root
-	rim = island_rim
 	var walkable := StaticBody3D.new()
 	walkable.name = "WalkableSurfaces"
 	walkable.collision_layer = 8
@@ -113,6 +115,8 @@ func floor_top(elevation: int) -> float:
 func world_y(p: Dictionary, ignore: int = -1) -> float:
 	if layer(p) == "floor":
 		return floor_top(p.elevation) - SLAB
+	if p.item == "harborRope" and p.elevation == 0 and has_floor(cell(p), 0, ignore):
+		return floor_top(0)
 	if p.elevation > 0 or layer(p) == "edge" or p.item == "steelColumn":
 		return GROUND + p.elevation / 1000.0
 	for position in cells(p):
@@ -135,7 +139,9 @@ func placement_bounds(p: Dictionary, ignore: int = -1) -> AABB:
 	if p.item == "stairs":
 		local = AABB(Vector3(-CELL / 2, 0, -CELL / 2), Vector3(CELL, rise(p, ignore), CELL))
 	elif layer(p) == "floor":
-		local = AABB(Vector3(-CELL / 2, 0, -CELL / 2), Vector3(CELL, SLAB, CELL))
+		var info: Dictionary = catalog.items[p.item]
+		var size := Vector3(info.width * CELL, SLAB, info.depth * CELL)
+		local = AABB(Vector3(-size.x / 2, 0, -size.z / 2), size)
 	elif local.size.length_squared() == 0:
 		var info: Dictionary = catalog.items[p.item]
 		var size := Vector3(info.width * CELL, Catalog.WALL, info.depth * CELL if layer(p) == "object" else 0.10)
@@ -155,8 +161,10 @@ func touched_cells(p: Dictionary, bounds: AABB) -> Array[Vector2i]:
 	return result
 
 
-func within_island(location: Vector2i) -> bool:
+func within_island(location: Vector2i, allow_water := false) -> bool:
 	var midpoint := Vector2(location) * CELL
+	if not allow_water and harbor_water.has_point(midpoint):
+		return false
 	var half := Vector2.ONE * CELL / 2
 	var pond := Vector2(3.35, 0.35)
 	if has_pond and ((pond.clamp(midpoint - half, midpoint + half) - pond) / Vector2(2.15, 1.87)).length_squared() <= 1.0:
@@ -202,9 +210,19 @@ func can_place(p: Dictionary, ignore: int = -1) -> bool:
 			return false
 	var bounds := placement_bounds(p, ignore)
 	var locations := touched_cells(p, bounds)
+	var harbor_deck: bool = p.elevation == 0 and catalog.items[p.item].has("deck_y")
+	var over_water := false
 	for location in cells(p) + locations:
-		if not within_island(location):
+		var wet := harbor_water.has_point(Vector2(location) * CELL)
+		over_water = over_water or wet
+		if not within_island(location, true):
 			return false
+		if wet and not harbor_deck and not has_floor(location, 0, ignore):
+			return false
+	if harbor_deck and over_water and not reaches_shore(locations):
+		return false
+	if not keeps_water_support(ignore, p):
+		return false
 	if not supported(p, locations, ignore):
 		return false
 	for i in range(placements.size()):
@@ -222,6 +240,41 @@ func can_place(p: Dictionary, ignore: int = -1) -> bool:
 			if other.item == "stairs" and a == "edge" and stair_edge_fits(other, p, overlap, ignore):
 				continue
 			return false
+	return true
+
+
+func reaches_shore(locations: Array[Vector2i]) -> bool:
+	for location in locations:
+		if within_island(location):
+			return true
+		for direction: Vector2i in DIRECTIONS:
+			if within_island(location + direction):
+				return true
+	return false
+
+
+func keeps_water_support(index: int, replacement: Dictionary = {}) -> bool:
+	if index < 0 or not harbor_water.has_area():
+		return true
+	var previous: Dictionary = placements[index]
+	if layer(previous) != "floor" or previous.elevation != 0:
+		return true
+	var vacated: Array[Vector2i] = []
+	var kept: Array[Vector2i] = []
+	if not replacement.is_empty() and replacement.elevation == 0:
+		kept = cells(replacement)
+	for location in cells(previous):
+		if harbor_water.has_point(Vector2(location) * CELL) and location not in kept:
+			vacated.append(location)
+	if vacated.is_empty():
+		return true
+	for i in placements.size():
+		if i == index:
+			continue
+		var other: Dictionary = placements[i]
+		for location in touched_cells(other, placement_bounds(other)):
+			if location in vacated:
+				return false
 	return true
 
 
@@ -261,10 +314,13 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3) -> Dicti
 		if layer(support) == "floor":
 			p.elevation = support.elevation
 			if layer(p) == "floor":
-				var offset := horizontal - center(support)
+				var offset := (horizontal - center(support)) / Vector2(width(support))
 				if maxf(absf(offset.x), absf(offset.y)) < CELL * 0.275:
 					return {}
-				horizontal = Vector2(cell(support) + Vector2i(Vector2(signf(offset.x), 0) if absf(offset.x) > absf(offset.y) else Vector2(0, signf(offset.y)))) * CELL
+				var adjacent := adjacent_floor(p, support, grid_cell(horizontal), offset)
+				p.x = adjacent.x
+				p.z = adjacent.y
+				return p
 			elif viewer.y <= bounds.end.y or point.y < bounds.end.y - 0.035:
 				return {}
 		elif support.item == "stairs" and item in ["floor", "flatRoof", "skylight", "stairs"] and bounds.end.y - point.y <= 0.15:
@@ -290,6 +346,8 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3) -> Dicti
 				horizontal = midpoint
 		else:
 			return {}
+	if layer(p) == "floor":
+		horizontal -= (Vector2(width(p)) - Vector2.ONE) * CELL / 2.0
 	var location := grid_cell(horizontal)
 	if fine(p):
 		var subdivisions := grid_cell(horizontal, CELL / 5)
@@ -302,10 +360,25 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3) -> Dicti
 	return p
 
 
+func adjacent_floor(p: Dictionary, support: Dictionary, hit_cell: Vector2i, offset: Vector2) -> Vector2i:
+	var origin := cell(support)
+	var span := width(support)
+	var size := width(p)
+	if absf(offset.x) > absf(offset.y):
+		return Vector2i(
+			origin.x + (span.x if offset.x > 0.0 else -size.x),
+			clampi(hit_cell.y, origin.y, origin.y + maxi(0, span.y - size.y))
+		)
+	return Vector2i(
+		clampi(hit_cell.x, origin.x, origin.x + maxi(0, span.x - size.x)),
+		origin.y + (span.y if offset.y > 0.0 else -size.y)
+	)
+
+
 func create_body(p: Dictionary) -> StaticBody3D:
 	if not catalog.available(p.item):
 		return null
-	var body := StaticBody3D.new()
+	var body := Door.new() if p.item == "woodDoor" else StaticBody3D.new()
 	body.collision_layer = 16 if layer(p) == "floor" or p.item == "stairs" else 2
 	body.collision_mask = 0
 	add_parts(body, p)
@@ -318,7 +391,8 @@ func add_parts(body: StaticBody3D, p: Dictionary) -> void:
 	var visual := catalog.visuals(p.item, height)
 	body.add_child(visual)
 	if layer(p) == "floor":
-		catalog.box_shape(body, Vector3(CELL, SLAB, CELL), Vector3.UP * SLAB / 2)
+		var info: Dictionary = catalog.items[p.item]
+		catalog.box_shape(body, Vector3(info.width * CELL, SLAB, info.depth * CELL), Vector3.UP * SLAB / 2)
 	elif p.item == "stairs":
 		var ramp := ConvexPolygonShape3D.new()
 		var points := PackedVector3Array()
@@ -332,15 +406,17 @@ func add_parts(body: StaticBody3D, p: Dictionary) -> void:
 		collider.shape = ramp
 		body.add_child(collider)
 		body.set_meta("rise", height)
-	elif p.item in ["doorway", "windowWall"]:
-		var opening := 0.504 if p.item == "doorway" else 0.434
-		var top := 0.89 if p.item == "doorway" else 0.88
+	elif p.item in ["doorway", "woodDoor", "windowWall"]:
+		var opening := 0.434 if p.item == "windowWall" else Catalog.DOOR_OPENING
+		var top := Catalog.DOOR_HEAD if p.item == "woodDoor" else (0.89 if p.item == "doorway" else 0.88)
 		var jamb := (CELL - opening) / 2
 		for side in [-1, 1]:
 			catalog.box_shape(body, Vector3(jamb, Catalog.WALL, 0.10), Vector3(side * (CELL - jamb) / 2, Catalog.WALL / 2, 0))
 		catalog.box_shape(body, Vector3(opening, Catalog.WALL - top, 0.10), Vector3(0, (Catalog.WALL + top) / 2, 0))
 		if p.item == "windowWall":
 			catalog.box_shape(body, Vector3(opening, 0.51, 0.10), Vector3(0, 0.255, 0))
+		elif body is Door:
+			body.setup_panel(catalog, visual)
 	elif p.item in ["wall", "halfWall"]:
 		var bounds := catalog.item_bounds(p.item)
 		catalog.box_shape(body, bounds.size, bounds.get_center())
@@ -350,6 +426,7 @@ func add_parts(body: StaticBody3D, p: Dictionary) -> void:
 
 func sync() -> void:
 	occupied.clear()
+	doors.clear()
 	for i in range(placements.size()):
 		for key in slots(placements[i]):
 			occupied[key] = i
@@ -364,10 +441,26 @@ func sync() -> void:
 			add_parts(body, p)
 		elif p.item == "wall":
 			sync_landing_wall(p, body.get_child(1) as CollisionShape3D)
+		elif body is Door:
+			doors.append(body)
 		body.set_meta("placement", i)
 		body.transform = placement_transform(p)
 		body.reset_physics_interpolation()
 	rebuild_walk_surface()
+
+
+func nearby_door(point: Vector3) -> Door:
+	var nearest: Door
+	var distance := INF
+	for door in doors:
+		var local := door.to_local(point)
+		if absf(local.x) > 0.52 or absf(local.z) > 0.90 or local.y < -0.16 or local.y > 0.42:
+			continue
+		var candidate := local.length_squared()
+		if candidate < distance:
+			nearest = door
+			distance = candidate
+	return nearest
 
 
 func sync_landing_wall(wall: Dictionary, collision: CollisionShape3D) -> void:
@@ -410,13 +503,14 @@ func rebuild_walk_surface() -> void:
 			landings[slot("edge", (cell(p) + exit) * 2 - exit, p.elevation + STOREY)] = true
 	for p: Dictionary in placements:
 		if layer(p) == "floor":
-			var midpoint := Vector2(cell(p)) * CELL
 			var top := floor_top(p.elevation)
-			var transform := Transform3D(Basis.IDENTITY, Vector3(midpoint.x, top - SLAB, midpoint.y))
-			var sides: Array[bool] = []
-			for side: Vector2i in DIRECTIONS:
-				sides.append(not has_floor(cell(p) + side, p.elevation) and not landings.has(slot("edge", cell(p) * 2 + side, p.elevation)))
-			append_walk_faces(faces, transform, SLAB, SLAB, 0.0, sides)
+			for location in cells(p):
+				var midpoint := Vector2(location) * CELL
+				var transform := Transform3D(Basis.IDENTITY, Vector3(midpoint.x, top - SLAB, midpoint.y))
+				var sides: Array[bool] = []
+				for side: Vector2i in DIRECTIONS:
+					sides.append(not has_floor(location + side, p.elevation) and not landings.has(slot("edge", location * 2 + side, p.elevation)))
+				append_walk_faces(faces, transform, SLAB, SLAB, 0.0, sides)
 		elif p.item == "stairs":
 			var landing: Vector2i = cell(p) + DIRECTIONS[(p.turns + 2) % 4]
 			var sides: Array[bool] = [true, true, not has_floor(landing, p.elevation + STOREY), true]
@@ -472,9 +566,12 @@ func put(p: Dictionary, index: int) -> int:
 	return index
 
 
-func remove(index: int) -> void:
+func remove(index: int) -> bool:
+	if not keeps_water_support(index):
+		return false
 	if bodies[index] != null:
 		bodies[index].free()
 	bodies.remove_at(index)
 	placements.remove_at(index)
 	sync()
+	return true

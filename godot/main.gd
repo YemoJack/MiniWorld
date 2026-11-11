@@ -4,17 +4,22 @@ const Catalog = preload("res://godot/catalog.gd")
 const Builder = preload("res://godot/builder.gd")
 const Islands = preload("res://godot/islands.gd")
 const IslandView = preload("res://godot/island_view.gd")
-const FLAT_ISLAND = preload("res://assets/islands/flat.tscn")
-const CABIN_ISLAND = preload("res://assets/islands/cabin.tscn")
+const ISLAND_SCENES := {
+	"flat": preload("res://assets/islands/flat.tscn"),
+	"cabin": preload("res://assets/islands/cabin.tscn"),
+	"harbor": preload("res://assets/islands/harbor.tscn"),
+}
 const HUD = preload("res://godot/hud.gd")
 const Player = preload("res://godot/player.gd")
 const SPY_DRONE := "res://local-assets/models/spy-drone/SM_Prop_Drone_01.tscn"
 const ORBIT_YAW := 0.595
 const ORBIT_PITCH := 0.445
 const ORBIT_DISTANCE := 18.9
+const CLOUD_CLEARANCE := 3.0
 
 @onready var island_root: Node3D = $Island
 @onready var island := island_root.get_node_or_null("CabinIsland") as IslandView
+@onready var clouds: Node3D = $Clouds
 @onready var structures: Node3D = $Structures
 @onready var player: Player = $Player
 @onready var overview: Camera3D = $Overview
@@ -34,6 +39,7 @@ var build_yaw := 0.42
 var build_pitch := -0.52
 var drone: Node3D
 var rotors: Array[MeshInstance3D]
+var cloud_positions: Array[Vector3]
 var ghost: Node3D
 var ghost_material := StandardMaterial3D.new()
 var outline := MeshInstance3D.new()
@@ -46,7 +52,9 @@ var moving := -1
 var target: Dictionary
 var valid := false
 var hovered := -1
-var confirm_pending := false
+var select_pending := false
+var place_pending := false
+var door_pending := false
 var pressed: Dictionary
 var drag_distance := 0.0
 var dragging := false
@@ -54,6 +62,8 @@ var dragging := false
 
 func _ready() -> void:
 	create_drone()
+	for cloud: Node3D in clouds.get_children():
+		cloud_positions.append(cloud.position)
 	ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	ghost_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	ghost_material.no_depth_test = false
@@ -70,14 +80,17 @@ func _ready() -> void:
 	hud.reset_requested.connect(reset_view)
 	hud.island_chosen.connect(switch_island)
 	hud.island_created.connect(func(): switch_island(islands.new_island()))
+	hud.island_config_requested.connect(show_island_config)
+	hud.expansion_confirmed.connect(expand_island)
 	hud.import_requested.connect(import_save)
 	hud.item_chosen.connect(choose_item)
 	hud.move_requested.connect(move_selected)
 	hud.rotate_requested.connect(rotate_item)
 	hud.remove_requested.connect(remove_selected)
 	hud.cancel_requested.connect(cancel)
-	hud.confirm_requested.connect(func(): confirm_pending = true)
+	hud.place_requested.connect(func(): place_pending = true)
 	hud.jump_requested.connect(func(): player.requested_jump = mode == "player")
+	hud.door_requested.connect(func(): door_pending = mode == "player")
 	hud.touch_key.connect(func(key: Key, down: bool): pressed[key] = down)
 	get_window().focus_exited.connect(release_controls)
 	show_island()
@@ -122,22 +135,66 @@ func show_island() -> void:
 	if island == null or island.terrain != data.terrain or island.grid != null:
 		if island != null:
 			island.free()
-		var packed := CABIN_ISLAND if data.terrain == "cabin" else FLAT_ISLAND
+		var packed: PackedScene = ISLAND_SCENES[data.terrain]
 		island = packed.instantiate() as IslandView
 		island_root.add_child(island)
 	island.setup(catalog)
 	if builder == null:
-		builder = Builder.new(catalog, structures, PackedVector2Array(IslandView.RIM))
+		builder = Builder.new(catalog, structures)
 	builder.has_pond = data.terrain == "cabin"
 	builder.obstacles = island.obstacles
+	island.resize_land(Islands.island_size(data))
+	position_clouds()
+	builder.rim = island.rim
+	builder.harbor_water = island.harbor_water
 	builder.load_island(data.placements)
 	island.create_grid(builder)
-	player.yaw = PI
+	player.yaw = 0.0 if data.terrain == "harbor" else PI
 	player.pitch = -0.30
+	player.spawn = Vector3(2 * Catalog.CELL, 0.02, -2.8) if data.terrain == "harbor" else Vector3(0, 0.02, 2.8)
 	player.respawn()
 	aim_overview()
 	set_mode("overview" if mode == "overview" else "player")
 	hud.set_islands(islands.state)
+
+
+func show_island_config() -> void:
+	release_controls()
+	var size := Islands.island_size(islands.active())
+	hud.show_island_config(size, Islands.next_size(size))
+
+
+func expand_island() -> void:
+	var size := Islands.island_size(islands.active())
+	var next := Islands.next_size(size)
+	if next == size:
+		return
+	if not islands.expand_active(next):
+		hud.show_message("存档未写入")
+		return
+	island.resize_land(next)
+	position_clouds()
+	builder.rim = island.rim
+	builder.harbor_water = island.harbor_water
+	island.create_grid(builder)
+	aim_overview()
+
+
+func position_clouds() -> void:
+	var area := island.land_bounds.grow(CLOUD_CLEARANCE)
+	var center := area.get_center()
+	for index in cloud_positions.size():
+		var cloud := clouds.get_child(index) as Node3D
+		var original := cloud_positions[index]
+		var offset := Vector2(original.x, original.z) - center
+		var relative := (offset / (area.size * 0.5)).abs()
+		var edge_ratio := maxf(relative.x, relative.y)
+		if is_zero_approx(edge_ratio):
+			offset = Vector2(0, -area.size.y * 0.5)
+		elif edge_ratio < 1.0:
+			offset /= edge_ratio
+		var horizontal := center + offset
+		cloud.position = Vector3(horizontal.x, original.y, horizontal.y)
 
 
 func switch_island(id: String) -> void:
@@ -159,7 +216,7 @@ func import_save(path: String) -> void:
 
 
 func reset_view() -> void:
-	player.yaw = PI
+	player.yaw = 0.0 if island.terrain == "harbor" else PI
 	player.pitch = -0.30
 	player.respawn()
 	orbit_yaw = ORBIT_YAW
@@ -176,7 +233,9 @@ func set_mode(next: String) -> void:
 	island.grid.visible = mode == "build"
 	pressed.clear()
 	dragging = false
-	confirm_pending = false
+	select_pending = false
+	place_pending = false
+	door_pending = false
 	match mode:
 		"player": player.camera.make_current()
 		"overview": overview.make_current()
@@ -203,6 +262,10 @@ func toggle_build() -> void:
 		build_yaw = 0.42
 		build_pitch = -0.52
 		drone.position = Vector3(0.4, 1.1, 1.65)
+		if island.terrain == "harbor":
+			build_yaw = PI
+			build_pitch = -0.58
+			drone.position = Vector3(2 * Catalog.CELL, 1.1, -3 * Catalog.CELL)
 		aim_drone()
 		set_mode("build")
 	else:
@@ -213,11 +276,12 @@ func toggle_build() -> void:
 
 
 func aim_overview() -> void:
+	var distance := orbit_distance * maxf(1.0, island.land_bounds.size.length() / Vector2(Islands.BASE_SIZE).length())
 	overview.projection = Camera3D.PROJECTION_PERSPECTIVE if perspective else Camera3D.PROJECTION_ORTHOGONAL
-	overview.size = orbit_distance * 0.67
+	overview.size = distance * 0.67
 	overview.fov = 43
 	var center := Vector3(0, -0.64, 0)
-	overview.position = center + Vector3(sin(orbit_yaw) * cos(orbit_pitch), sin(orbit_pitch), cos(orbit_yaw) * cos(orbit_pitch)) * orbit_distance
+	overview.position = center + Vector3(sin(orbit_yaw) * cos(orbit_pitch), sin(orbit_pitch), cos(orbit_yaw) * cos(orbit_pitch)) * distance
 	overview.look_at(center)
 
 
@@ -232,21 +296,38 @@ func held(key: Key) -> int:
 
 
 func _physics_process(delta: float) -> void:
+	if hud.expansion_dialog.visible:
+		return
 	var move := Vector2(held(KEY_D) - held(KEY_A), held(KEY_W) - held(KEY_S)).limit_length()
 	var turn := Vector2(held(KEY_RIGHT) - held(KEY_LEFT), held(KEY_DOWN) - held(KEY_UP)) * delta * 1.42
 	if mode == "player":
 		player.turn(turn)
+		update_nearby_door()
 		player.drive(move, delta)
 	elif mode == "build":
 		build_yaw -= turn.x
 		build_pitch = clampf(build_pitch - turn.y, -1.42, 1.22)
 		var flight := Vector3(move.x, held(KEY_E) - held(KEY_Q), -move.y).limit_length()
 		drone.position += flight.rotated(Vector3.UP, build_yaw) * 2.35 * delta
-		drone.position = drone.position.clamp(Vector3(-9, 0.28, -8), Vector3(9, 9.3, 8))
+		var limits := island.land_bounds.grow_individual(2.2, 2.7, 2.2, 2.7)
+		drone.position = drone.position.clamp(
+			Vector3(limits.position.x, 0.28, limits.position.y), Vector3(limits.end.x, 9.3, limits.end.y)
+		)
 		aim_drone()
 		for i in range(rotors.size()):
 			rotors[i].rotation.y += delta * (22 if i % 2 == 0 else -22)
 		update_build()
+
+
+func update_nearby_door() -> void:
+	var door := builder.nearby_door(player.global_position)
+	var action := ""
+	if door != null:
+		if door_pending:
+			door.toggle(player.global_position)
+		action = "关门" if door.is_open else "开门"
+	door_pending = false
+	hud.set_door_action(action)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -255,21 +336,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_SPACE:
 				if mode == "player":
 					player.requested_jump = true
-			KEY_ENTER, KEY_KP_ENTER:
-				confirm_pending = mode == "build"
+			KEY_F:
+				door_pending = mode == "player"
 			KEY_R:
 				rotate_item()
 			KEY_DELETE, KEY_BACKSPACE:
 				remove_selected()
 			KEY_ESCAPE:
-				if mode == "build" and draft_item.is_empty():
+				if mode == "build" and draft_item.is_empty() and selected < 0:
 					toggle_build()
 				else:
 					cancel()
 	elif event is InputEventMouseButton:
 		if event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
 			if not event.pressed and dragging and event.button_index == MOUSE_BUTTON_LEFT and drag_distance < 5.0:
-				confirm_pending = mode == "build"
+				select_pending = mode == "build" and draft_item.is_empty()
 			dragging = event.pressed
 			drag_distance = 0.0
 		elif mode == "overview" and event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
@@ -301,12 +382,14 @@ func clear_selection() -> void:
 	target = {}
 	valid = false
 	hovered = -1
+	select_pending = false
+	place_pending = false
 	if ghost != null:
 		ghost.free()
 		ghost = null
 	outline.hide()
 	detail_grid.hide()
-	hud.set_build_state("", false, false, false, false)
+	hud.set_build_state("", false, false)
 
 
 func cancel() -> void:
@@ -339,6 +422,7 @@ func rotate_item() -> void:
 	if not draft_item.is_empty():
 		draft_turns = (draft_turns + 1) % 4
 		target = {}
+		valid = false
 		update_ghost()
 	elif selected >= 0:
 		var p: Dictionary = builder.placements[selected].duplicate()
@@ -351,7 +435,9 @@ func rotate_item() -> void:
 
 func remove_selected() -> void:
 	if mode == "build" and selected >= 0 and draft_item.is_empty():
-		builder.remove(selected)
+		if not builder.remove(selected):
+			hud.show_message("请先移走上方的物件")
+			return
 		clear_selection()
 		save()
 
@@ -369,11 +455,13 @@ func update_build() -> void:
 			target = next
 			valid = builder.can_place(target, moving)
 			update_ghost()
-	if confirm_pending:
-		confirm_pending = false
+	if select_pending:
+		select_pending = false
 		if draft_item.is_empty():
 			selected = hovered
-		elif valid:
+	if place_pending:
+		place_pending = false
+		if not draft_item.is_empty() and valid:
 			var destination := builder.put(target, moving)
 			if destination >= 0:
 				var was_move := moving >= 0
@@ -387,10 +475,7 @@ func update_build() -> void:
 				save()
 	var outlined_item := selected if selected >= 0 else hovered
 	update_outline(outlined_item if draft_item.is_empty() else -1)
-	var label: String = draft_item
-	if label.is_empty() and selected >= 0:
-		label = builder.placements[selected].item
-	hud.set_build_state(label, selected >= 0, not draft_item.is_empty(), moving >= 0, valid)
+	hud.set_build_state(draft_item, selected >= 0, valid)
 
 
 func create_detail_grid() -> void:

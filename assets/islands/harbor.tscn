@@ -1,0 +1,15 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://godot/island_view.gd" id="1"]
+
+[node name="HarborIsland" type="StaticBody3D"]
+script = ExtResource("1")
+terrain = "harbor"
+
+[node name="RockAndGrass" type="MeshInstance3D" parent="."]
+
+[node name="GroundCollision" type="CollisionShape3D" parent="."]
+
+[node name="Water" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.26, 0)
+cast_shadow = 0

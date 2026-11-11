@@ -10,6 +10,10 @@ const WOOD := Color("#af7d48")
 const TRIM := Color("#935d35")
 const SIDING := Color("#ddbf88")
 const GLASS := Color(0.50, 0.76, 0.78, 0.48)
+const DOOR_OPENING := 0.504
+const DOOR_HEAD := 0.95
+const DOOR_PANEL_SIZE := Vector3(0.488, 0.866, 0.056)
+const DOOR_PANEL_BOTTOM := SLAB + 0.009
 
 var items: Dictionary = preload("res://assets/catalog.gd").ITEMS
 var models: Dictionary
@@ -45,13 +49,14 @@ func box(parent: Node3D, size: Vector3, center: Vector3, color: Color) -> MeshIn
 	return part
 
 
-func box_shape(body: StaticBody3D, size: Vector3, center: Vector3) -> void:
+func box_shape(body: StaticBody3D, size: Vector3, center: Vector3) -> CollisionShape3D:
 	var shape := BoxShape3D.new()
 	shape.size = size
 	var collision := CollisionShape3D.new()
 	collision.shape = shape
 	collision.position = center
 	body.add_child(collision)
+	return collision
 
 
 func measured(node: Node3D, space: Transform3D = Transform3D.IDENTITY) -> AABB:
@@ -101,12 +106,23 @@ func visuals(id: String, rise: float = STOREY / 1000.0) -> Node3D:
 		fit.scale = Vector3.ONE * float(info.get("scale", 1.0))
 		if id == "picketFence":
 			fit.scale *= Vector3(1.0, 2.15, 1.85)
-		if layer == "floor":
-			fit.scale = Vector3(CELL / original.size.x, SLAB / original.size.y if original.size.y > 0.001 else 1.0, CELL / original.size.z)
+			fit.scale.x = CELL / original.size.x
+			fit.position.x = -original.get_center().x * fit.scale.x
+		if id == "harborRope":
+			fit.scale = Vector3(CELL, 0.46, 0.09) / original.size
 			var origin := original.get_center()
-			origin.y = original.end.y
+			origin.y = original.position.y
+			fit.position = -origin * fit.scale
+		if layer == "floor":
+			var deck_scale := fit.scale.y if info.has("deck_y") else (SLAB / original.size.y if original.size.y > 0.001 else 1.0)
+			fit.scale = Vector3(CELL * info.width / original.size.x, deck_scale, CELL * info.depth / original.size.z)
+			var origin := original.get_center()
+			origin.y = info.get("deck_y", original.end.y)
 			fit.position = Vector3.UP * SLAB - origin * fit.scale
-			if id == "flatRoof":
+			if info.has("deck_y"):
+				var backing := Vector3(CELL * info.width, 0.025, CELL * info.depth)
+				box(visual, backing, Vector3.UP * 0.008, TRIM.darkened(0.35))
+			elif id == "flatRoof":
 				box(visual, Vector3(CELL, SLAB - 0.001, CELL), Vector3(0, (SLAB - 0.001) / 2, 0), Color("#9b9280"))
 		return visual
 	match id:
@@ -117,26 +133,73 @@ func visuals(id: String, rise: float = STOREY / 1000.0) -> Node3D:
 				box(visual, Vector3(CELL, SLAB * 0.5, CELL / 4 - 0.008), Vector3(0, SLAB * 0.75, (i - 1.5) * CELL / 4), tint)
 		"flatRoof", "skylight":
 			box(visual, Vector3(CELL, SLAB, CELL), Vector3.UP * SLAB / 2, GLASS if id == "skylight" else Color("#a69b86"))
-		"wall", "doorway", "windowWall", "halfWall":
-			var height := WALL * (0.5 if id == "halfWall" else 1.0)
+		"harborDock", "harborBridge":
+			var width := CELL * float(info.width)
+			var depth := CELL * float(info.depth)
+			for i in int(info.depth) * 6:
+				var z := -depth / 2 + (i + 0.5) * CELL / 6
+				box(visual, Vector3(width, SLAB, CELL / 6 - 0.004), Vector3(0, SLAB / 2, z), WOOD.darkened((i % 3) * 0.06))
+			for x in [-1, 1]:
+				for z in [-1, 1]:
+					box(visual, Vector3(0.09, 1.25, 0.09), Vector3(x * (width / 2 - 0.12), -0.61, z * (depth / 2 - 0.12)), TRIM)
+		"harborRope":
+			for x in [-0.39, 0.39]:
+				box(visual, Vector3(0.055, 0.46, 0.055), Vector3(x, 0.23, 0), TRIM)
+			for height in [0.18, 0.34]:
+				box(visual, Vector3(CELL, 0.022, 0.025), Vector3(0, height, 0), SIDING)
+		"harborBarrel":
+			box(visual, Vector3(0.34, 0.43, 0.34), Vector3.UP * 0.215, TRIM)
+			for height in [0.10, 0.33]:
+				box(visual, Vector3(0.35, 0.035, 0.35), Vector3.UP * height, Color("#5c5650"))
+		"harborShed":
+			box(visual, Vector3(2.10, 1.45, 1.80), Vector3.UP * 0.725, TRIM)
 			for side in [-1, 1]:
-				box(visual, Vector3(0.055, height, 0.10), Vector3(side * (CELL - 0.055) / 2, height / 2, 0), TRIM)
-			box(visual, Vector3(CELL, 0.055, 0.10), Vector3(0, height - 0.0275, 0), TRIM)
-			if id == "doorway" or id == "windowWall":
-				var width := 0.53 if id == "doorway" else 0.46
-				var top := 0.91 if id == "doorway" else 0.88
+				box(visual, Vector3(1.26, 0.08, 1.98), Vector3(side * 0.57, 1.66, 0), WOOD).rotation.z = -side * 0.32
+		"wall", "doorway", "woodDoor", "windowWall", "halfWall":
+			var height := WALL * (0.5 if id == "halfWall" else 1.0)
+			var trim_width := 0.055
+			var panel_span := CELL - 2 * trim_width
+			var rail_bottom := height - trim_width
+			for side in [-1, 1]:
+				box(visual, Vector3(trim_width, height, 0.10), Vector3(side * (CELL - trim_width) / 2, height / 2, 0), TRIM)
+			box(visual, Vector3(panel_span, trim_width, 0.10), Vector3(0, rail_bottom + trim_width / 2, 0), TRIM)
+			if id != "wall" and id != "halfWall":
+				var width := 0.46 if id == "windowWall" else DOOR_OPENING + 0.026
+				var top := 0.88 if id == "windowWall" else (DOOR_HEAD if id == "woodDoor" else 0.91)
 				for side in [-1, 1]:
-					panels(visual, side * (width + CELL) / 4, (CELL - width) / 2, 0, top)
+					panels(visual, side * (width + panel_span) / 4, (panel_span - width) / 2, 0, top)
 					box(visual, Vector3(0.026, top, 0.096), Vector3(side * width / 2, top / 2, 0), TRIM)
-				panels(visual, 0, CELL - 0.11, top, height - 0.055)
+				panels(visual, 0, panel_span, top, rail_bottom)
 				if id == "windowWall":
 					panels(visual, 0, width, 0, 0.49)
 					box(visual, Vector3(width + 0.04, 0.043, 0.105), Vector3(0, 0.49, 0), TRIM)
+				elif id == "woodDoor":
+					box(visual, Vector3(width, 0.038, 0.10), Vector3(0, top + 0.019, 0), TRIM)
+					wood_door_panel(visual)
 			else:
-				panels(visual, 0, CELL - 0.11, 0, height - 0.055)
+				panels(visual, 0, panel_span, 0, rail_bottom)
 		"stairs":
 			stairs_mesh(visual, rise)
 	return visual
+
+
+func wood_door_panel(parent: Node3D) -> void:
+	var hinge := Node3D.new()
+	hinge.name = "DoorHinge"
+	hinge.position = Vector3(-DOOR_PANEL_SIZE.x / 2, DOOR_PANEL_BOTTOM, 0)
+	parent.add_child(hinge)
+	var center := DOOR_PANEL_SIZE / 2
+	box(hinge, Vector3(DOOR_PANEL_SIZE.x, DOOR_PANEL_SIZE.y, 0.032), Vector3(center.x, center.y, 0), TRIM)
+	var plank := DOOR_PANEL_SIZE.x / 5
+	for side in [-1, 1]:
+		for i in range(5):
+			box(hinge, Vector3(plank - 0.003, DOOR_PANEL_SIZE.y, 0.012),
+				Vector3((i + 0.5) * plank, center.y, side * 0.019), WOOD.darkened(i % 3 * 0.065))
+		for height in [0.15, 0.69]:
+			box(hinge, Vector3(DOOR_PANEL_SIZE.x, 0.053, 0.012),
+				Vector3(center.x, height, side * 0.028), TRIM)
+		box(hinge, Vector3(0.042, 0.060, 0.013), Vector3(DOOR_PANEL_SIZE.x - 0.05, 0.46, side * 0.029), Color("#3c3933"))
+		box(hinge, Vector3(0.054, 0.018, 0.032), Vector3(DOOR_PANEL_SIZE.x - 0.062, 0.46, side * 0.047), Color("#645947"))
 
 
 func panels(parent: Node3D, x: float, width: float, bottom: float, top: float) -> void:
@@ -184,7 +247,7 @@ func available(id: String) -> bool:
 	if not items.has(id) or not items[id].has("layer"):
 		return false
 	var path: String = items[id].get("asset", "")
-	return path.is_empty() or id in ["halfWall", "flatRoof", "skylight"] or FileAccess.file_exists(path) or ResourceLoader.exists(path)
+	return path.is_empty() or id in ["halfWall", "flatRoof", "skylight", "harborDock", "harborBridge", "harborRope", "harborBarrel"] or FileAccess.file_exists(path) or ResourceLoader.exists(path)
 
 
 func item_bounds(id: String) -> AABB:
