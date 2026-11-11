@@ -269,10 +269,10 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3) -> Dicti
 				return {}
 		elif support.item == "stairs" and item in ["floor", "flatRoof", "skylight", "stairs"] and bounds.end.y - point.y <= 0.15:
 			p.elevation = support.elevation + STOREY
-			var location := cell(support)
+			var landing_cell := cell(support)
 			if item != "stairs" or turns != (int(support.turns) + 2) % 4:
-				location += DIRECTIONS[(int(support.turns) + 2) % 4]
-			horizontal = Vector2(location) * CELL
+				landing_cell += DIRECTIONS[(int(support.turns) + 2) % 4]
+			horizontal = Vector2(landing_cell) * CELL
 		elif layer(p) == "floor" and (layer(support) == "edge" or support.item == "steelColumn") and bounds.end.y - point.y <= 0.10:
 			p.elevation = roundi((bounds.end.y + SLAB - GROUND) * 1000.0)
 			var midpoint := center(support)

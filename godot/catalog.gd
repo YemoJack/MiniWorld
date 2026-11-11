@@ -69,7 +69,8 @@ func measured(node: Node3D, space: Transform3D = Transform3D.IDENTITY) -> AABB:
 
 func imported(id: String) -> Node3D:
 	if not models.has(id):
-		var path: String = items[id].get("asset", "")
+		var info: Dictionary = items.get(id, {})
+		var path: String = info.get("asset", "")
 		if path.is_empty():
 			return null
 		var model: Node3D

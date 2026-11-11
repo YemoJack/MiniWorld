@@ -8,7 +8,7 @@ var model: Node3D
 
 func _ready() -> void:
 	var catalog := Catalog.new()
-	model = catalog.imported("player")
+	model = catalog.imported("spyPlayer")
 	$Fallback.visible = model == null
 	if model == null:
 		return

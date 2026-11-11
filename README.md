@@ -35,4 +35,6 @@ copy(localStorage.getItem('miniworld.islands.v1'))
 - [Wooden Crate](https://polyfork.dev/asset/wooden-crate-e46521)
 - [Farm Lantern](https://polyfork.dev/asset/farm-lantern-747dc8)
 
-本地 Synty 模型和贴图仍放在 `local-assets/models/` 和 `local-assets/textures/`，这些素材由 Godot 导入。项目自带基础角色和建材，没有本地素材也能运行。若 `player.glb` 带有原地 `Idle`、`Walk`、`Jump` 动画，角色会播放对应片段。
+本地 Synty 模型和贴图放在 `local-assets/models/` 和 `local-assets/textures/`。主角场景位于 `local-assets/models/spy-player/`，使用 Spy Kit 特工和 Mixamo 的待机、行走、跳跃动作。建造模式从 `local-assets/models/spy-drone/` 加载 Spy Kit 无人机。缺少本地素材时，游戏使用内置角色、无人机和建材。
+
+`local-assets/` 由 Git 忽略。整包素材可放在 `local-assets/packs/`，并在该目录创建空的 `.gdignore`，让 Godot 跳过导入。

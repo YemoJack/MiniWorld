@@ -39,8 +39,8 @@ func setup_fallback_rig(asset: Node3D) -> void:
 	if skeletons.is_empty():
 		return
 	skeleton = skeletons[0] as Skeleton3D
-	for name in ["Shoulder_L", "Shoulder_R", "UpperLeg_L", "UpperLeg_R"]:
-		var bone := skeleton.find_bone(name)
+	for bone_name in ["Shoulder_L", "Shoulder_R", "UpperLeg_L", "UpperLeg_R"]:
+		var bone := skeleton.find_bone(bone_name)
 		if bone < 0:
 			joints.clear()
 			return
@@ -109,7 +109,7 @@ func animate(speed: float, delta: float) -> void:
 		var angle := sin(phase + (PI if i in [1, 2] else 0.0)) * speed * 0.42 if is_on_floor() else -0.35
 		if joints.size() == 4:
 			var goal := rest_rotations[i] * Quaternion(joint_axes[i], angle)
-			var rotation := skeleton.get_bone_pose_rotation(joints[i])
-			skeleton.set_bone_pose_rotation(joints[i], rotation.slerp(goal, 1.0 - exp(-14.0 * delta)))
+			var current_pose := skeleton.get_bone_pose_rotation(joints[i])
+			skeleton.set_bone_pose_rotation(joints[i], current_pose.slerp(goal, 1.0 - exp(-14.0 * delta)))
 		elif fallback_limbs.size() == 4:
 			fallback_limbs[i].rotation.x = lerpf(fallback_limbs[i].rotation.x, angle, 1.0 - exp(-14.0 * delta))

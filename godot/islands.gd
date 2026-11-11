@@ -47,8 +47,8 @@ func read_file(path: String) -> Dictionary:
 		islands.append({"id": id, "name": title, "terrain": terrain, "placements": placements})
 	if islands.is_empty():
 		return {}
-	var active: Variant = parsed.get("activeId")
-	return {"activeId": active if active in ids else ids[0], "islands": islands}
+	var active_id: Variant = parsed.get("activeId")
+	return {"activeId": active_id if active_id in ids else ids[0], "islands": islands}
 
 
 func read_placement(raw: Variant) -> Dictionary:

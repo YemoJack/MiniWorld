@@ -34,5 +34,5 @@ const ITEMS := {
 	"lilies": {"asset": "res://assets/models/lily-pads-b0c5d0.glb"},
 	"pine": {"asset": "res://assets/models/campground-pine-stand-0bf4f2.glb"},
 	"cabin": {"asset": "res://assets/models/porch-log-cabin-d2f3ef.glb"},
-	"player": {"asset": "res://local-assets/models/player.glb"},
+	"spyPlayer": {"asset": "res://local-assets/models/spy-player/spy-player.tscn"},
 }

@@ -8,6 +8,7 @@ const FLAT_ISLAND = preload("res://assets/islands/flat.tscn")
 const CABIN_ISLAND = preload("res://assets/islands/cabin.tscn")
 const HUD = preload("res://godot/hud.gd")
 const Player = preload("res://godot/player.gd")
+const SPY_DRONE := "res://local-assets/models/spy-drone/SM_Prop_Drone_01.tscn"
 const ORBIT_YAW := 0.595
 const ORBIT_PITCH := 0.445
 const ORBIT_DISTANCE := 18.9
@@ -90,6 +91,19 @@ func release_controls() -> void:
 func create_drone() -> void:
 	drone = Node3D.new()
 	add_child(drone)
+	build_camera.fov = 58
+	build_camera.near = 0.04
+	if ResourceLoader.exists(SPY_DRONE, "PackedScene"):
+		var packed := load(SPY_DRONE) as PackedScene
+		if packed != null:
+			var model := packed.instantiate() as Node3D
+			model.scale = Vector3.ONE * 0.8
+			drone.add_child(model)
+			for rotor in model.get_children():
+				if rotor is MeshInstance3D:
+					rotors.append(rotor)
+			return
+
 	var shell := Color("#f5eed8")
 	var dark := Color("#30564c")
 	catalog.box(drone, Vector3(0.25, 0.14, 0.34), Vector3.ZERO, shell)
@@ -100,8 +114,6 @@ func create_drone() -> void:
 			catalog.box(drone, Vector3(0.31, 0.048, 0.058), Vector3(x * 0.14, 0.012, z * 0.105), shell).rotation.y = -x * z * 0.58
 			catalog.box(drone, Vector3(0.09, 0.05, 0.08), Vector3(x * 0.26, 0.038, z * 0.19), dark)
 			rotors.append(catalog.box(drone, Vector3(0.22, 0.012, 0.025), Vector3(x * 0.26, 0.072, z * 0.19), dark))
-	build_camera.fov = 58
-	build_camera.near = 0.04
 
 
 func show_island() -> void:
@@ -373,8 +385,8 @@ func update_build() -> void:
 					target = {}
 					update_ghost()
 				save()
-	var owner := selected if selected >= 0 else hovered
-	update_outline(owner if draft_item.is_empty() else -1)
+	var outlined_item := selected if selected >= 0 else hovered
+	update_outline(outlined_item if draft_item.is_empty() else -1)
 	var label: String = draft_item
 	if label.is_empty() and selected >= 0:
 		label = builder.placements[selected].item
