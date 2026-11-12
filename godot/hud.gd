@@ -26,7 +26,7 @@ const CATEGORIES := {
 }
 const SUBCATEGORIES := {
 	"floors": "地板", "walls": "墙壁", "openings": "门窗", "stairs": "楼梯",
-	"fences": "围栏", "frames": "构架", "docks": "码头",
+	"fences": "围栏", "frames": "构架", "roofs": "屋顶", "docks": "码头",
 	"tables": "桌台", "seats": "座椅", "storage": "容器",
 	"flowers": "花坛", "planters": "花盆花箱",
 	"lights": "照明", "bridges": "桥梁", "props": "摆件",

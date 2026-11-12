@@ -1,10 +1,15 @@
 extends StaticBody3D
 
 const Catalog = preload("res://godot/catalog.gd")
+const SWING_TIME := 0.28
+const SWING_CHECKS := 12
 
 var is_open := false
 var hinge: Node3D
 var panel: CollisionShape3D
+var swing_from := 0.0
+var swing_to := 0.0
+var swing_time := SWING_TIME
 
 
 func setup_panel(catalog: Catalog, visual: Node3D) -> void:
@@ -17,26 +22,52 @@ func panel_offset() -> Vector3:
 
 
 func toggle(from: Vector3) -> void:
+	if swing_time < SWING_TIME:
+		return
 	if is_open:
-		try_angle(0.0)
+		start_swing(0.0)
 	else:
 		var away := PI / 2 if to_local(from).z >= 0.0 else -PI / 2
-		if not try_angle(away):
-			try_angle(-away)
+		if not start_swing(away):
+			start_swing(-away)
 
 
-func try_angle(angle: float) -> bool:
+func panel_pose(angle: float) -> Transform3D:
 	var rotation_basis := Basis(Vector3.UP, angle)
-	var next := Transform3D(rotation_basis, hinge.position + rotation_basis * panel_offset())
+	return Transform3D(rotation_basis, hinge.position + rotation_basis * panel_offset())
+
+
+func blocked(pose: Transform3D) -> bool:
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = panel.shape
-	query.transform = global_transform * next
+	query.transform = global_transform * pose
 	query.collision_mask = 2 | 4 # Structures and player.
 	query.exclude = [get_rid()]
-	if not get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty():
-		return false
+	return not get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
+
+
+func start_swing(angle: float) -> bool:
+	var current := hinge.rotation.y
+	for step in range(1, SWING_CHECKS + 1):
+		if blocked(panel_pose(lerpf(current, angle, float(step) / SWING_CHECKS))):
+			return false
+	swing_from = current
+	swing_to = angle
+	swing_time = 0.0
 	is_open = not is_zero_approx(angle)
-	hinge.rotation.y = angle
-	hinge.reset_physics_interpolation()
-	panel.transform = next
 	return true
+
+
+func _physics_process(delta: float) -> void:
+	if swing_time >= SWING_TIME:
+		return
+	swing_time = minf(SWING_TIME, swing_time + delta)
+	var t := swing_time / SWING_TIME
+	var angle := lerpf(swing_from, swing_to, t * t * (3.0 - 2.0 * t))
+	var pose := panel_pose(angle)
+	if blocked(pose):
+		swing_time = SWING_TIME
+		is_open = not is_zero_approx(hinge.rotation.y)
+		return
+	hinge.rotation.y = angle
+	panel.transform = pose

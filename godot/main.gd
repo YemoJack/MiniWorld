@@ -48,6 +48,8 @@ var detail_grid := MeshInstance3D.new()
 var selected := -1
 var draft_item := ""
 var draft_turns := 0
+var draft_candidates: Array[Dictionary]
+var draft_rotation_pending := false
 var moving := -1
 var target: Dictionary
 var valid := false
@@ -379,6 +381,8 @@ func clear_selection() -> void:
 	selected = -1
 	moving = -1
 	draft_item = ""
+	draft_candidates.clear()
+	draft_rotation_pending = false
 	target = {}
 	valid = false
 	hovered = -1
@@ -420,13 +424,16 @@ func rotate_item() -> void:
 	if mode != "build":
 		return
 	if not draft_item.is_empty():
-		draft_turns = (draft_turns + 1) % 4
-		target = {}
-		valid = false
-		update_ghost()
+		draft_rotation_pending = true
 	elif selected >= 0:
 		var p: Dictionary = builder.placements[selected].duplicate()
-		p.turns = (p.turns + 1) % 4
+		if builder.layer(p) in ["edge", "gable"]:
+			var facing: Vector2i = Builder.DIRECTIONS[p.turns]
+			p.x += facing.x
+			p.z += facing.y
+			p.turns = (p.turns + 2) % 4
+		else:
+			p.turns = (p.turns + 1) % 4
 		if builder.put(p, selected) >= 0:
 			save()
 		else:
@@ -444,17 +451,14 @@ func remove_selected() -> void:
 
 func update_build() -> void:
 	var origin := build_camera.global_position
-	var query := PhysicsRayQueryParameters3D.create(origin, origin - build_camera.global_basis.z * 24, 19)
+	var ray_end := origin - build_camera.global_basis.z * 24
+	var query := PhysicsRayQueryParameters3D.create(origin, ray_end, 19)
 	if moving >= 0:
 		query.exclude = [builder.bodies[moving].get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	hovered = -1 if hit.is_empty() else int(hit.collider.get_meta("placement", -1))
 	if not draft_item.is_empty():
-		var next: Dictionary = builder.target(draft_item, draft_turns, hit, origin)
-		if next != target:
-			target = next
-			valid = builder.can_place(target, moving)
-			update_ghost()
+		update_draft(hit, origin, ray_end)
 	if select_pending:
 		select_pending = false
 		if draft_item.is_empty():
@@ -471,11 +475,95 @@ func update_build() -> void:
 				else:
 					valid = false
 					target = {}
+					draft_candidates.clear()
 					update_ghost()
 				save()
 	var outlined_item := selected if selected >= 0 else hovered
 	update_outline(outlined_item if draft_item.is_empty() else -1)
 	hud.set_build_state(draft_item, selected >= 0, valid)
+
+
+func update_draft(hit: Dictionary, origin: Vector3, ray_end := Vector3.INF) -> void:
+	var kind: String = catalog.items[draft_item].layer
+	if kind == "edge":
+		update_edge_draft(hit, origin, hit.get("position", ray_end))
+		return
+	if kind in ["roof", "gable"]:
+		var shared_edges := builder.roof_edge_targets(draft_item, hit, moving)
+		if not shared_edges.is_empty():
+			if shared_edges != draft_candidates or draft_rotation_pending:
+				draft_candidates = shared_edges
+				var current := shared_edges.find(target)
+				if draft_rotation_pending and current >= 0:
+					shared_edges = shared_edges.slice(current + 1) + shared_edges.slice(0, current + 1)
+				draft_rotation_pending = false
+				choose_draft(shared_edges)
+			return
+	var candidates: Array[Dictionary] = []
+	for turns in 4:
+		candidates.append(builder.target(draft_item, turns, hit, origin))
+	if candidates == draft_candidates and not draft_rotation_pending:
+		return
+	draft_candidates = candidates
+	var start := (draft_turns + 1) % 4 if draft_rotation_pending else draft_turns
+	draft_rotation_pending = false
+	var ordered: Array[Dictionary] = []
+	for step in 4:
+		ordered.append(candidates[(start + step) % 4])
+	choose_draft(ordered)
+
+
+func update_edge_draft(hit: Dictionary, origin: Vector3, ray_end: Vector3) -> void:
+	var candidates := builder.opening_edge_targets(draft_item, origin, ray_end, moving)
+	var has_opening := not candidates.is_empty()
+	var nearby := builder.nearby_edge_targets(draft_item, hit, origin)
+	candidates.append_array(nearby)
+	if nearby.is_empty():
+		var snap := builder.connection_snap(draft_item, hit)
+		var start: int = snap.get("turns", draft_turns)
+		for step in 4:
+			var candidate := builder.target(draft_item, (start + step) % 4, hit, origin, snap)
+			if not candidate.is_empty() and candidate not in candidates:
+				candidates.append(candidate)
+	if candidates == draft_candidates and not draft_rotation_pending:
+		return
+	draft_candidates = candidates
+	var current := candidates.find(target)
+	if draft_rotation_pending and current >= 0:
+		var rotated: Array[Dictionary] = []
+		for step in range(1, 5):
+			var turns := (draft_turns + step) % 4
+			for candidate in candidates:
+				if candidate.turns == turns and candidate != target:
+					rotated.append(candidate)
+		rotated.append(target)
+		candidates = rotated
+	elif not has_opening and not nearby.is_empty() and current > 0 and valid \
+		and builder.edge_target_score(target, hit.position, origin) <= builder.edge_target_score(nearby[0], hit.position, origin) + 0.035:
+		candidates = candidates.duplicate()
+		candidates.remove_at(current)
+		candidates.push_front(target)
+	draft_rotation_pending = false
+	choose_draft(candidates)
+
+
+func choose_draft(candidates: Array[Dictionary]) -> void:
+	var next := {}
+	var can_place := false
+	for candidate in candidates:
+		if candidate.is_empty():
+			continue
+		if next.is_empty():
+			next = candidate
+		if builder.can_place(candidate, moving):
+			next = candidate
+			draft_turns = candidate.turns
+			can_place = true
+			break
+	if next != target or can_place != valid:
+		target = next
+		valid = can_place
+		update_ghost()
 
 
 func create_detail_grid() -> void:
@@ -499,14 +587,13 @@ func update_ghost() -> void:
 	detail_grid.hide()
 	if target.is_empty():
 		return
-	ghost = catalog.visuals(draft_item, builder.rise(target, moving))
+	ghost = catalog.visuals(draft_item, builder.rise(target, moving), builder.visual_joins(target, moving))
 	ghost_material.albedo_color = Color(0.49, 0.88, 0.67, 0.55) if valid else Color(1.0, 0.34, 0.25, 0.53)
 	for mesh in ghost.find_children("*", "MeshInstance3D", true, false):
 		mesh.material_override = ghost_material
 		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ghost)
 	ghost.transform = builder.placement_transform(target, moving)
-	ghost.position.y += 0.004
 	if builder.fine(target):
 		var horizontal := Vector2(builder.cell(target)) * Catalog.CELL
 		detail_grid.position = Vector3(horizontal.x, ghost.position.y + 0.006, horizontal.y)
