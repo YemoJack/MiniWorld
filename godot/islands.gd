@@ -36,7 +36,7 @@ func _init(assets: Catalog, path: String = SAVE) -> void:
 				{"id": "cabin", "name": "木屋岛", "terrain": "cabin", "grid": GOLDEN_GRID, "wallHeightModules": true, "placements": []},
 			],
 		}
-	if not state.islands.any(func(island: Dictionary): return island.terrain == "harbor"):
+	if state.get("defaultHarborAdded") != true and not state.islands.any(func(island: Dictionary): return island.terrain == "harbor"):
 		var id := "harbor"
 		while state.islands.any(func(island: Dictionary): return island.id == id):
 			id += "-default"
@@ -49,6 +49,7 @@ func _init(assets: Catalog, path: String = SAVE) -> void:
 				{"item": "harborBarrel", "x": 0, "z": -2, "turns": 0, "elevation": 0},
 			],
 		})
+	state.defaultHarborAdded = true
 
 
 func read_file(path: String) -> Dictionary:
@@ -89,7 +90,10 @@ func read_file(path: String) -> Dictionary:
 	if islands.is_empty():
 		return {}
 	var active_id: Variant = parsed.get("activeId")
-	return {"activeId": active_id if active_id in ids else ids[0], "islands": islands, "floorCenters": true}
+	return {
+		"activeId": active_id if active_id in ids else ids[0], "islands": islands,
+		"floorCenters": true, "defaultHarborAdded": parsed.get("defaultHarborAdded") == true,
+	}
 
 
 func read_placement(raw: Variant, legacy: bool, assets: Catalog) -> Dictionary:
@@ -398,6 +402,19 @@ func rename_island(id: String, title: String) -> bool:
 	var candidate := state.duplicate()
 	candidate.islands = state.islands.duplicate()
 	candidate.islands[candidate.islands.find(island)] = island.merged({"name": name}, true)
+	return commit(candidate)
+
+
+func delete_island(id: String) -> bool:
+	var island := find_island(id)
+	if island.is_empty() or state.islands.size() <= 1:
+		return false
+	var candidate := state.duplicate()
+	candidate.islands = state.islands.duplicate()
+	var index: int = candidate.islands.find(island)
+	candidate.islands.remove_at(index)
+	if id == state.activeId:
+		candidate.activeId = candidate.islands[mini(index, candidate.islands.size() - 1)].id
 	return commit(candidate)
 
 

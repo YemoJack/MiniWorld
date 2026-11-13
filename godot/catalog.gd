@@ -212,6 +212,14 @@ func visuals(id: String, rise := 0.0, joins := 0) -> Node3D:
 				wood_door_panel(visual)
 		"stairs":
 			stairs_mesh(visual, rise if rise > 0.0 else wall_height)
+		"stool", "bench":
+			var width := 0.91 if id == "bench" else 0.28
+			var depth := 0.28 if id == "bench" else 0.26
+			box(visual, Vector3(width, 0.036, depth), Vector3.UP * 0.212, WOOD)
+			for x in [-1, 1]:
+				for z in [-1, 1]:
+					var foot := Vector3(x * (width / 2.0 - 0.048), 0.097, z * (depth / 2.0 - 0.045))
+					box(visual, Vector3(0.046, 0.194, 0.046), foot, TRIM)
 		_:
 			if layer in ["roof", "ridge", "gable"]:
 				mesh_part(visual, roof_model(id, joins))
@@ -339,7 +347,7 @@ func available(id: String) -> bool:
 	if not items.has(id) or not items[id].has("layer"):
 		return false
 	var path: String = items[id].get("asset", "")
-	return path.is_empty() or id in ["halfWall", "flatRoof", "skylight", "harborDock", "harborBridge", "harborRope", "harborBarrel"] or FileAccess.file_exists(path) or ResourceLoader.exists(path)
+	return path.is_empty() or id in ["bench", "halfWall", "flatRoof", "skylight", "harborDock", "harborBridge", "harborRope", "harborBarrel"] or FileAccess.file_exists(path) or ResourceLoader.exists(path)
 
 
 func item_bounds(id: String) -> AABB:

@@ -3,6 +3,7 @@ extends ColorRect
 signal island_chosen(id: String)
 signal island_created(title: String)
 signal island_renamed(id: String, title: String)
+signal island_deleted(id: String)
 signal expansion_requested
 signal import_requested(path: String)
 signal export_requested(id: String, path: String)
@@ -12,12 +13,15 @@ var open_button: Button
 var rename_button: Button
 var export_button: Button
 var expand_button: Button
+var delete_button: Button
 var name_dialog: ConfirmationDialog
+var delete_dialog: ConfirmationDialog
 var name_field: LineEdit
 var chooser: FileDialog
 var active_id := ""
 var rename_id := ""
 var export_id := ""
+var delete_id := ""
 
 
 func _ready() -> void:
@@ -80,6 +84,20 @@ func _ready() -> void:
 	rename_button = action(actions, "重命名", edit_name.bind(true))
 	export_button = action(actions, "导出…", choose_file.bind(true))
 	expand_button = action(actions, "扩建岛屿", func(): expansion_requested.emit())
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(spacer)
+	delete_button = action(actions, "删除…", confirm_delete)
+	delete_button.add_theme_color_override("font_color", Color("#9a322b"))
+	delete_button.add_theme_color_override("font_hover_color", Color("#9a322b"))
+
+	delete_dialog = ConfirmationDialog.new()
+	delete_dialog.title = "删除存档"
+	delete_dialog.ok_button_text = "删除"
+	delete_dialog.cancel_button_text = "取消"
+	delete_dialog.dialog_autowrap = true
+	delete_dialog.confirmed.connect(submit_delete)
+	add_child(delete_dialog)
 
 	name_dialog = ConfirmationDialog.new()
 	name_dialog.ok_button_text = "保存"
@@ -116,15 +134,18 @@ func refresh(state: Dictionary) -> void:
 	active_id = state.activeId
 	save_list.clear()
 	var focus := 0
+	var previous_index := -1
 	for island: Dictionary in state.islands:
 		var current: bool = island.id == active_id
 		var index := save_list.add_item(("●  " if current else "     ") + island.name)
 		save_list.set_item_metadata(index, island.id)
 		save_list.set_item_tooltip(index, island.name)
-		if island.id == previous or (previous.is_empty() and current):
+		if current:
 			focus = index
+		if island.id == previous:
+			previous_index = index
 	if save_list.item_count > 0:
-		save_list.select(focus)
+		save_list.select(previous_index if previous_index >= 0 else focus)
 		save_list.ensure_current_is_visible()
 	update_actions()
 
@@ -140,6 +161,8 @@ func update_actions() -> void:
 	rename_button.disabled = id.is_empty()
 	export_button.disabled = id.is_empty()
 	expand_button.disabled = id.is_empty() or id != active_id
+	delete_button.disabled = id.is_empty() or save_list.item_count <= 1
+	delete_button.tooltip_text = "至少保留一个存档" if save_list.item_count <= 1 else ""
 
 
 func open_selected() -> void:
@@ -170,6 +193,22 @@ func submit_name() -> void:
 		island_created.emit(title)
 	else:
 		island_renamed.emit(rename_id, title)
+
+
+func confirm_delete() -> void:
+	if delete_button.disabled:
+		return
+	delete_id = selected_id()
+	var title := save_list.get_item_tooltip(save_list.get_selected_items()[0])
+	delete_dialog.dialog_text = "永久删除「%s」及岛上的所有建造内容？" % title
+	delete_dialog.popup_centered(Vector2i(380, 140))
+	delete_dialog.get_cancel_button().grab_focus()
+
+
+func submit_delete() -> void:
+	var id := delete_id
+	delete_id = ""
+	island_deleted.emit(id)
 
 
 func choose_file(exporting: bool) -> void:

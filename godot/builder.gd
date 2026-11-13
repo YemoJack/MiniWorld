@@ -3,6 +3,7 @@ extends RefCounted
 const Catalog = preload("res://godot/catalog.gd")
 const Data = Catalog.Data
 const Door = preload("res://godot/build_door.gd")
+const Seat = preload("res://godot/build_seat.gd")
 const GROUND := Catalog.GROUND
 const SLAB := Catalog.SLAB
 const DIRECTIONS := [Vector2i(0, 1), Vector2i(1, 0), Vector2i(0, -1), Vector2i(-1, 0)]
@@ -20,6 +21,7 @@ var obstacles: Array[AABB]
 var placements: Array
 var bodies: Array[StaticBody3D]
 var doors: Array[Door]
+var seats: Array[Seat]
 var occupied: Dictionary
 var interfaces_by_edge: Dictionary
 var walk_shape: CollisionShape3D
@@ -42,6 +44,7 @@ func load_island(values: Array) -> void:
 		if body != null:
 			body.free()
 	bodies.clear()
+	occupied.clear()
 	placements = values
 	for value: Dictionary in placements:
 		bodies.append(create_body(value))
@@ -1026,7 +1029,20 @@ func adjacent_floor(p: Dictionary, support: Dictionary, hit_cell: Vector2i, dire
 func create_body(p: Dictionary) -> StaticBody3D:
 	if not catalog.available(p.item):
 		return null
-	var body := Door.new() if p.get("opening") == "woodDoor" else StaticBody3D.new()
+	var body: StaticBody3D
+	var info: Dictionary = catalog.items[p.item]
+	var seat_count: int = info.get("seats", 0)
+	if seat_count > 0:
+		var seat := Seat.new()
+		seat.seat_count = seat_count
+		seat.seat_bounds = catalog.item_bounds(p.item)
+		seat.seat_height = seat.seat_bounds.position.y + seat.seat_bounds.size.y * float(info.get("seat_height_ratio", 1.0))
+		seat.front_side = info.get("seat_front", 0.0)
+		body = seat
+	elif p.get("opening") == "woodDoor":
+		body = Door.new()
+	else:
+		body = StaticBody3D.new()
 	body.collision_layer = 16 if layer(p) == "floor" or p.item == "stairs" else 2
 	body.collision_mask = 0
 	add_parts(body, p)
@@ -1096,6 +1112,7 @@ func sync() -> void:
 	occupied.clear()
 	interfaces_by_edge.clear()
 	doors.clear()
+	seats.clear()
 	for i in range(placements.size()):
 		for key in slots(placements[i]):
 			occupied[key] = i
@@ -1117,6 +1134,8 @@ func sync() -> void:
 			sync_landing_wall(p, body)
 		if body is Door:
 			doors.append(body)
+		elif body is Seat:
+			seats.append(body)
 		body.set_meta("placement", i)
 		body.transform = placement_transform(p)
 		body.reset_physics_interpolation()
@@ -1175,6 +1194,15 @@ func nearby_door(point: Vector3) -> Door:
 		if candidate < distance:
 			nearest = door
 			distance = candidate
+	return nearest
+
+
+func nearby_seat(player: CharacterBody3D, capsule: CollisionShape3D) -> Dictionary:
+	var nearest := {}
+	for seat in seats:
+		var place := seat.nearest_place(player, capsule)
+		if not place.is_empty() and place.distance < nearest.get("distance", INF):
+			nearest = place
 	return nearest
 
 

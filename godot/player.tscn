@@ -40,7 +40,7 @@ size = Vector3(0.07, 0.26, 0.07)
 
 [sub_resource type="BoxMesh" id="LegMesh"]
 material = SubResource("Pants")
-size = Vector3(0.11, 0.37, 0.12)
+size = Vector3(0.11, 0.185, 0.12)
 
 [node name="Player" type="CharacterBody3D"]
 position = Vector3(0, 0.02, 2.8)
@@ -94,14 +94,28 @@ mesh = SubResource("ArmMesh")
 position = Vector3(-0.065, 0.38, 0)
 
 [node name="Mesh" type="MeshInstance3D" parent="Avatar/Fallback/LegLeft"]
+position = Vector3(0, -0.0925, 0)
+mesh = SubResource("LegMesh")
+
+[node name="Shin" type="Node3D" parent="Avatar/Fallback/LegLeft"]
 position = Vector3(0, -0.185, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Avatar/Fallback/LegLeft/Shin"]
+position = Vector3(0, -0.0925, 0)
 mesh = SubResource("LegMesh")
 
 [node name="LegRight" type="Node3D" parent="Avatar/Fallback"]
 position = Vector3(0.065, 0.38, 0)
 
 [node name="Mesh" type="MeshInstance3D" parent="Avatar/Fallback/LegRight"]
+position = Vector3(0, -0.0925, 0)
+mesh = SubResource("LegMesh")
+
+[node name="Shin" type="Node3D" parent="Avatar/Fallback/LegRight"]
 position = Vector3(0, -0.185, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Avatar/Fallback/LegRight/Shin"]
+position = Vector3(0, -0.0925, 0)
 mesh = SubResource("LegMesh")
 
 [node name="CameraRig" type="Node3D" parent="."]

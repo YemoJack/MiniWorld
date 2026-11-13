@@ -7,6 +7,7 @@ signal reset_requested
 signal island_chosen(id: String)
 signal island_created(title: String)
 signal island_renamed(id: String, title: String)
+signal island_deleted(id: String)
 signal settings_opened
 signal island_config_requested
 signal expansion_confirmed
@@ -21,7 +22,7 @@ signal cancel_requested
 signal touch_key(key: Key, down: bool)
 signal place_requested
 signal jump_requested
-signal door_requested
+signal interaction_requested
 
 const Catalog = preload("res://godot/catalog.gd")
 const SaveSettings = preload("res://godot/save_settings.gd")
@@ -46,7 +47,7 @@ const BUILD_BOTTOM_INSET := 20.0
 var catalog: Catalog
 var root: Control
 var build_button: Button
-var door_button: Button
+var interaction_button: Button
 var view_button: Button
 var projection_button: Button
 var islands: MenuButton
@@ -121,8 +122,8 @@ func setup(assets: Catalog) -> void:
 	browse.offset_bottom = -22
 	build_button = button(browse, "建造", func(): build_toggled.emit())
 	button(browse, "复位", func(): reset_requested.emit())
-	door_button = button(browse, "", func(): door_requested.emit())
-	door_button.hide()
+	interaction_button = button(browse, "", func(): interaction_requested.emit())
+	interaction_button.hide()
 
 	setup_palette()
 	setup_build_actions()
@@ -136,6 +137,7 @@ func setup(assets: Catalog) -> void:
 	settings.island_chosen.connect(island_chosen.emit)
 	settings.island_created.connect(island_created.emit)
 	settings.island_renamed.connect(island_renamed.emit)
+	settings.island_deleted.connect(island_deleted.emit)
 	settings.import_requested.connect(import_requested.emit)
 	settings.export_requested.connect(export_requested.emit)
 	settings.expansion_requested.connect(island_config_requested.emit)
@@ -378,7 +380,7 @@ func show_island_config(current: Vector2i, next: Vector2i) -> void:
 func set_mode(mode: String, perspective := false) -> void:
 	var editing := mode == "build"
 	browse.visible = not editing
-	set_door_action("")
+	set_interaction_action("")
 	palette.visible = editing
 	build_actions.visible = editing
 	exit_button.visible = editing
@@ -411,12 +413,12 @@ func set_catalog(assets: Catalog) -> void:
 		category = "all"
 
 
-func set_door_action(action: String) -> void:
-	door_button.visible = not action.is_empty()
-	if door_button.visible:
+func set_interaction_action(action: String) -> void:
+	interaction_button.visible = not action.is_empty()
+	if interaction_button.visible:
 		var title := action if touch_pad != null else "F  " + action
-		if door_button.text != title:
-			door_button.text = title
+		if interaction_button.text != title:
+			interaction_button.text = title
 
 
 func change_category(key: String) -> void:

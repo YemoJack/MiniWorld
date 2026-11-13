@@ -56,7 +56,7 @@ var opening_host := -1
 var target: Dictionary
 var valid := false
 var place_pending := false
-var door_pending := false
+var interaction_pending := false
 var pressed: Dictionary
 var dragging := false
 
@@ -81,6 +81,7 @@ func _ready() -> void:
 	hud.island_chosen.connect(switch_island)
 	hud.island_created.connect(create_island)
 	hud.island_renamed.connect(rename_island)
+	hud.island_deleted.connect(delete_island)
 	hud.settings_opened.connect(release_controls)
 	hud.island_config_requested.connect(show_island_config)
 	hud.expansion_confirmed.connect(expand_island)
@@ -94,7 +95,7 @@ func _ready() -> void:
 	hud.cancel_requested.connect(cancel)
 	hud.place_requested.connect(func(): place_pending = true)
 	hud.jump_requested.connect(func(): player.requested_jump = mode == "player")
-	hud.door_requested.connect(func(): door_pending = mode == "player")
+	hud.interaction_requested.connect(func(): interaction_pending = mode == "player")
 	hud.touch_key.connect(func(key: Key, down: bool): pressed[key] = down)
 	get_window().focus_exited.connect(release_controls)
 	show_island()
@@ -231,6 +232,17 @@ func rename_island(id: String, title: String) -> void:
 		hud.show_message("无法重命名岛屿")
 
 
+func delete_island(id: String) -> void:
+	var current: String = islands.state.activeId
+	if not islands.delete_island(id):
+		hud.show_message("无法删除存档")
+		return
+	if current != islands.state.activeId:
+		show_island()
+	else:
+		hud.set_islands(islands.state)
+
+
 func save() -> void:
 	if not islands.write():
 		hud.show_message("存档未写入")
@@ -259,6 +271,8 @@ func reset_view() -> void:
 
 
 func set_mode(next: String) -> void:
+	if next != "player":
+		player.clear_seating()
 	mode = next
 	player.active = mode == "player"
 	player.visible = player.active
@@ -267,7 +281,7 @@ func set_mode(next: String) -> void:
 	pressed.clear()
 	dragging = false
 	place_pending = false
-	door_pending = false
+	interaction_pending = false
 	match mode:
 		"player": player.camera.make_current()
 		"overview": overview.make_current()
@@ -334,7 +348,7 @@ func _physics_process(delta: float) -> void:
 	var turn := Vector2(held(KEY_RIGHT) - held(KEY_LEFT), held(KEY_DOWN) - held(KEY_UP)) * delta * 1.42
 	if mode == "player":
 		player.turn(turn)
-		update_nearby_door()
+		update_interaction()
 		player.drive(move, delta)
 	elif mode == "build":
 		build_yaw -= turn.x
@@ -351,15 +365,27 @@ func _physics_process(delta: float) -> void:
 		update_build()
 
 
-func update_nearby_door() -> void:
-	var door := builder.nearby_door(player.global_position)
+func update_interaction() -> void:
 	var action := ""
-	if door != null:
-		if door_pending:
-			door.toggle(player.global_position)
-		action = "关门" if door.is_open else "开门"
-	door_pending = false
-	hud.set_door_action(action)
+	if player.seating == Player.Seating.SEATED:
+		if interaction_pending:
+			player.stand_up()
+		else:
+			action = "站起"
+	elif player.seating == Player.Seating.NONE:
+		var door := builder.nearby_door(player.global_position)
+		var place := builder.nearby_seat(player, player.capsule) if player.is_on_floor() and player.can_use_seats() else {}
+		if not place.is_empty() and (door == null or place.distance <= player.global_position.distance_squared_to(door.global_position)):
+			if interaction_pending:
+				player.sit_at(place)
+			else:
+				action = "坐下"
+		elif door != null:
+			if interaction_pending:
+				door.toggle(player.global_position)
+			action = "关门" if door.is_open else "开门"
+	interaction_pending = false
+	hud.set_interaction_action(action)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -374,7 +400,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if mode == "player":
 					player.requested_jump = true
 			KEY_F:
-				door_pending = mode == "player"
+				interaction_pending = mode == "player"
 			KEY_R:
 				rotate_item()
 			KEY_DELETE, KEY_BACKSPACE:
