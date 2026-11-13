@@ -3,15 +3,13 @@ extends RefCounted
 const Catalog = preload("res://godot/catalog.gd")
 const Data = Catalog.Data
 const Door = preload("res://godot/build_door.gd")
-const CELL := Catalog.CELL
 const GROUND := Catalog.GROUND
 const SLAB := Catalog.SLAB
-const STOREY := Catalog.STOREY
 const DIRECTIONS := [Vector2i(0, 1), Vector2i(1, 0), Vector2i(0, -1), Vector2i(-1, 0)]
 const TOLERANCE := 0.001
 const STAIR_EDGE_INSET := 0.18
-const WALL_MM := roundi(Catalog.WALL * 1000.0)
 const MODULES := ["wall", "halfWall", "floor", "woodRoofSlope", "woodRoofRidge"]
+const OPENING_PICK_LAYER := 32
 
 var catalog: Catalog
 var container: Node3D
@@ -85,17 +83,18 @@ func fine(p: Dictionary) -> bool:
 
 
 func center(p: Dictionary) -> Vector2:
-	var result := (Vector2(cell(p)) + (Vector2(width(p)) - Vector2.ONE) / 2) * CELL
+	var result := (Vector2(cell(p)) + (Vector2(width(p)) - Vector2.ONE) / 2) * catalog.cell_size
 	if profile(p).anchor == "edge":
-		result += Vector2(DIRECTIONS[p.turns]) * CELL / 2
+		result += Vector2(DIRECTIONS[p.turns]) * catalog.cell_size / 2
 	elif fine(p):
-		result += Vector2(p.get("offsetX", 0), p.get("offsetZ", 0)) * CELL / 5
+		result += Vector2(p.get("offsetX", 0), p.get("offsetZ", 0)) * catalog.cell_size / 5
 	return result
 
 
-func grid_cell(point: Vector2, size: float = CELL) -> Vector2i:
+func grid_cell(point: Vector2, size := 0.0) -> Vector2i:
 	# The browser save uses rounding toward positive infinity on a tie.
-	return Vector2i(floor(point / size + Vector2(0.5, 0.5)))
+	var step := size if size > 0.0 else catalog.cell_size
+	return Vector2i(floor(point / step + Vector2(0.5, 0.5)))
 
 
 func slot(kind: String, location: Vector2i, elevation: int) -> String:
@@ -119,7 +118,7 @@ func slots(p: Dictionary) -> PackedStringArray:
 
 func slab_bounds(p: Dictionary) -> AABB:
 	var info: Dictionary = catalog.items[p.item]
-	var size := Vector3(info.width * CELL, SLAB, info.depth * CELL)
+	var size := Vector3(info.width * catalog.cell_size, SLAB, info.depth * catalog.cell_size)
 	return AABB(Vector3(-size.x / 2.0, 0, -size.z / 2.0), size)
 
 
@@ -136,16 +135,22 @@ func floor_top(elevation: int) -> float:
 	return floor_center(elevation) + SLAB / 2.0
 
 
+static func min_elevation(kind: String, storey_mm: int, surface_ridge := false) -> int:
+	# A snapped ridge stores its base below the crest by the standard roof rise.
+	return -roundi(storey_mm / 2.0) if kind == "ridge" and not surface_ridge else 0
+
+
 func world_y(p: Dictionary, ignore: int = -1) -> float:
 	var kind := layer(p)
 	if kind == "floor":
 		return floor_top(p.elevation) - SLAB
-	if kind == "ridge" and p.get("surfaceRidge", false):
-		return GROUND + p.elevation / 1000.0 - catalog.item_bounds(p.item).position.y
+	if kind == "ridge":
+		var inset := catalog.item_bounds(p.item).position.y if p.get("surfaceRidge", false) else 0.0
+		return floor_center(p.elevation) - inset
 	if p.item == "harborRope" and p.elevation == 0:
 		if has_floor(cell(p), 0, ignore) or has_floor(cell(p) + DIRECTIONS[p.turns], 0, ignore):
 			return floor_top(0)
-	if p.item == "stairs" and has_floor(cell(p), p.elevation, ignore):
+	if p.item == "stairs" and has_floor(stair_end(p, p.turns), p.elevation, ignore):
 		return floor_top(p.elevation)
 	if p.elevation > 0 or kind in ["edge", "roof", "gable"] or catalog.items[p.item].get("floor_support", false):
 		return GROUND + p.elevation / 1000.0
@@ -156,7 +161,17 @@ func world_y(p: Dictionary, ignore: int = -1) -> float:
 
 
 func rise(p: Dictionary, ignore: int = -1) -> float:
-	return floor_top(p.elevation + STOREY) - world_y(p, ignore)
+	return floor_top(p.elevation + catalog.storey_mm) - world_y(p, ignore)
+
+
+func stair_end(p: Dictionary, side: int) -> Vector2i:
+	var direction: Vector2i = DIRECTIONS[side]
+	return cell(p) + (width(p) - Vector2i.ONE) * direction.max(Vector2i.ZERO)
+
+
+func stair_landing(p: Dictionary) -> Vector2i:
+	var exit := (int(p.turns) + 2) % 4
+	return stair_end(p, exit) + DIRECTIONS[exit]
 
 
 func placement_transform(p: Dictionary, ignore: int = -1) -> Transform3D:
@@ -169,12 +184,13 @@ func placement_transform(p: Dictionary, ignore: int = -1) -> Transform3D:
 func placement_bounds(p: Dictionary, ignore: int = -1) -> AABB:
 	var local := catalog.item_bounds(p.item)
 	if p.item == "stairs":
-		local = AABB(Vector3(-CELL / 2, 0, -CELL / 2), Vector3(CELL, rise(p, ignore), CELL))
+		var depth := catalog.cell_size * int(catalog.items.stairs.depth)
+		local = AABB(Vector3(-catalog.cell_size / 2.0, 0, -depth / 2.0), Vector3(catalog.cell_size, rise(p, ignore), depth))
 	elif shape_kind(p) == "slab":
 		local = slab_bounds(p)
 	elif local.size.length_squared() == 0:
 		var info: Dictionary = catalog.items[p.item]
-		var size := Vector3(info.width * CELL, Catalog.WALL, info.depth * CELL if layer(p) == "object" else 0.10)
+		var size := Vector3(info.width * catalog.cell_size, catalog.wall_height, info.depth * catalog.cell_size if layer(p) == "object" else 0.10)
 		local = AABB(Vector3(-size.x / 2, 0, -size.z / 2), size)
 	return placement_transform(p, ignore) * local
 
@@ -194,20 +210,20 @@ func touched_cells(p: Dictionary, bounds: AABB) -> Array[Vector2i]:
 
 
 func within_island(location: Vector2i, allow_water := false, check_scenery := true) -> bool:
-	var midpoint := Vector2(location) * CELL
+	var midpoint := Vector2(location) * catalog.cell_size
 	if not allow_water and harbor_water.has_point(midpoint):
 		return false
-	var half := Vector2.ONE * CELL / 2
+	var half := Vector2.ONE * catalog.cell_size / 2
 	var pond := Vector2(3.35, 0.35)
 	if has_pond and ((pond.clamp(midpoint - half, midpoint + half) - pond) / Vector2(2.15, 1.87)).length_squared() <= 1.0:
 		return false
 	if check_scenery:
 		for bounds in obstacles:
-			if Rect2(Vector2(bounds.position.x, bounds.position.z), Vector2(bounds.size.x, bounds.size.z)).intersects(Rect2(midpoint - half, Vector2.ONE * CELL)):
+			if Rect2(Vector2(bounds.position.x, bounds.position.z), Vector2(bounds.size.x, bounds.size.z)).intersects(Rect2(midpoint - half, Vector2.ONE * catalog.cell_size)):
 				return false
 	for dx in [-0.49, 0.49]:
 		for dz in [-0.49, 0.49]:
-			if not Geometry2D.is_point_in_polygon((Vector2(location) + Vector2(dx, dz)) * CELL, rim):
+			if not Geometry2D.is_point_in_polygon((Vector2(location) + Vector2(dx, dz)) * catalog.cell_size, rim):
 				return false
 	return true
 
@@ -215,16 +231,21 @@ func within_island(location: Vector2i, allow_water := false, check_scenery := tr
 func can_anchor_cell(location: Vector2i, allow_water: bool, ignore: int) -> bool:
 	if not within_island(location, true, false):
 		return false
-	return allow_water or not harbor_water.has_point(Vector2(location) * CELL) or has_floor(location, 0, ignore)
+	return allow_water or not harbor_water.has_point(Vector2(location) * catalog.cell_size) or has_floor(location, 0, ignore)
 
 
 func can_place(p: Dictionary, ignore: int = -1) -> bool:
-	if p.is_empty() or p.elevation < 0 or p.elevation > 8000 or (p.item == "stairs" and p.elevation + STOREY > 8000):
+	if p.is_empty() or not catalog.items.get(p.item, {}).has("layer") \
+		or p.elevation > 8000 or (p.item == "stairs" and p.elevation + catalog.storey_mm > 8000):
+		return false
+	var a := layer(p)
+	if p.elevation < min_elevation(a, catalog.storey_mm, p.get("surfaceRidge", false)):
+		return false
+	if p.has("opening") and (p.item != "wall" or ignore < 0 or p.opening != placements[ignore].get("opening")):
 		return false
 	for key in slots(p):
 		if occupied.get(key, ignore) != ignore:
 			return false
-	var a := layer(p)
 	var is_edge := a in ["edge", "gable"]
 	for shared_slot: String in profile(p).get("conflicts", []):
 		for location in cells(p):
@@ -238,7 +259,7 @@ func can_place(p: Dictionary, ignore: int = -1) -> bool:
 	var harbor_deck: bool = p.elevation == 0 and catalog.items[p.item].has("deck_y")
 	var over_water := false
 	for location in locations:
-		over_water = over_water or harbor_water.has_point(Vector2(location) * CELL)
+		over_water = over_water or harbor_water.has_point(Vector2(location) * catalog.cell_size)
 		if can_anchor_cell(location, harbor_deck, ignore):
 			continue
 		var facing: Vector2i = DIRECTIONS[p.get("edgeFacing", p.turns)]
@@ -276,9 +297,9 @@ func allowed_contact(p: Dictionary, other: Dictionary, overlap: AABB, ignore: in
 		return true
 	var shape := shape_kind(p)
 	var other_shape := shape_kind(other)
-	if shape == "gable" and not Catalog.RoofKit.gable_overlaps_box(placement_transform(p, ignore), overlap, TOLERANCE):
+	if shape == "gable" and not Catalog.RoofKit.gable_overlaps_box(placement_transform(p, ignore), catalog.roof_rise(p.item), overlap, TOLERANCE, catalog.cell_size):
 		return true
-	if other_shape == "gable" and not Catalog.RoofKit.gable_overlaps_box(placement_transform(other), overlap, TOLERANCE):
+	if other_shape == "gable" and not Catalog.RoofKit.gable_overlaps_box(placement_transform(other), catalog.roof_rise(other.item), overlap, TOLERANCE, catalog.cell_size):
 		return true
 	return (shape == "slope" or other_shape == "slope") and not roof_overlap(p, other, overlap, ignore)
 
@@ -304,7 +325,7 @@ func wall_corner_contact(p: Dictionary, other: Dictionary) -> bool:
 
 
 func edge_vertices(p: Dictionary) -> Array[Vector2i]:
-	var midpoint := grid_cell(center(p), CELL / 2.0)
+	var midpoint := grid_cell(center(p), catalog.cell_size / 2.0)
 	var along: Vector2i = DIRECTIONS[(int(p.turns) + 1) % 4]
 	var span: int = catalog.items[p.item].width
 	return [midpoint - along * span, midpoint + along * span]
@@ -341,12 +362,13 @@ func roof_overlap(p: Dictionary, other: Dictionary, overlap: AABB, ignore: int) 
 	var slope := p if shape_kind(p) == "slope" else other
 	var neighbor := other if slope == p else p
 	var transform := placement_transform(slope, ignore if slope == p else -1)
+	var slope_rise := catalog.roof_rise(slope.item)
 	if shape_kind(neighbor) == "slope":
 		var other_transform := placement_transform(neighbor, ignore if neighbor == p else -1)
-		return Catalog.RoofKit.slopes_overlap(transform, other_transform, overlap, TOLERANCE)
+		return Catalog.RoofKit.slopes_overlap(transform, slope_rise, other_transform, catalog.roof_rise(neighbor.item), overlap, TOLERANCE, catalog.cell_size)
 	if roof_side_seam(slope, neighbor, overlap):
 		return false
-	return Catalog.RoofKit.slope_overlaps_box(transform, overlap, TOLERANCE)
+	return Catalog.RoofKit.slope_overlaps_box(transform, slope_rise, overlap, TOLERANCE, catalog.cell_size)
 
 
 func roof_side_seam(slope: Dictionary, wall: Dictionary, overlap: AABB) -> bool:
@@ -390,7 +412,7 @@ func interface_heights(p: Dictionary, spec: Array) -> Vector2:
 	# Order endpoint heights along the positive world axis on this edge.
 	var local_tangent := 1 if maxi(0, spec[1]) % 2 == 0 else 0
 	var tangent: Vector2i = DIRECTIONS[(local_tangent + int(p.turns)) % 4]
-	var heights: Vector2 = spec[2]
+	var heights: Vector2 = spec[2] * catalog.roof_rise(p.item)
 	return heights if tangent.x + tangent.y > 0 else Vector2(heights.y, heights.x)
 
 
@@ -445,16 +467,18 @@ func interface_target(item: String, turns: int, support: Dictionary, role: Strin
 		if doubled_cell.x % 2 != 0 or doubled_cell.y % 2 != 0:
 			continue
 		var base: Vector2 = support.heights - interface_heights(p, spec)
-		if absf(base.x - base.y) <= TOLERANCE and base.x >= GROUND - TOLERANCE:
-			return {"turns": turns, "location": doubled_cell / 2, "elevation": surface_elevation(base.x)}
+		var minimum := min_elevation(layer(p), catalog.storey_mm)
+		if absf(base.x - base.y) <= TOLERANCE and base.x >= floor_center(minimum) - TOLERANCE:
+			var elevation := maxi(minimum, roundi((base.x - GROUND) * 1000.0))
+			return {"turns": turns, "location": doubled_cell / 2, "elevation": elevation}
 	return {}
 
 
 func edge_distance(edge: Vector2i, point: Vector2) -> float:
-	var offset := (point - Vector2(edge) * CELL / 2.0).abs()
+	var offset := (point - Vector2(edge) * catalog.cell_size / 2.0).abs()
 	if edge.x % 2 == 0:
-		return Vector2(maxf(0.0, offset.x - CELL / 2.0), offset.y).length()
-	return Vector2(offset.x, maxf(0.0, offset.y - CELL / 2.0)).length()
+		return Vector2(maxf(0.0, offset.x - catalog.cell_size / 2.0), offset.y).length()
+	return Vector2(offset.x, maxf(0.0, offset.y - catalog.cell_size / 2.0)).length()
 
 
 func roof_connections(p: Dictionary, ignore: int) -> int:
@@ -480,14 +504,16 @@ func roof_edge_targets(item: String, hit: Dictionary, ignore: int) -> Array[Dict
 	var point: Vector3 = hit.position
 	var horizontal := Vector2(point.x, point.z)
 	var focus := cell(support)
-	var min_height: int = support.elevation
-	var max_height := min_height
+	var min_height := 0
+	var max_height := 8000
 	var edges: Array[Vector2i] = []
 	var roof_cells: Array[Vector2i] = []
 	if support_kind == "floor":
 		if point.y < floor_top(support.elevation) - 0.035:
 			return result
 		focus = grid_cell(horizontal).clamp(focus, focus + width(support) - Vector2i.ONE)
+		min_height = support.elevation
+		max_height = min_height
 		roof_cells.append(focus)
 		for side in 4:
 			edges.append(edge_key(focus, side))
@@ -503,7 +529,7 @@ func roof_edge_targets(item: String, hit: Dictionary, ignore: int) -> Array[Dict
 		min_height = max_height
 		edges.append(top.edge)
 		if kind == "roof":
-			min_height -= roundi(Catalog.RoofKit.RISE * 1000.0)
+			min_height -= roundi(catalog.roof_rise(item) * 1000.0)
 			var first: Vector2i = (top.edge - DIRECTIONS[top.side]) / 2
 			roof_cells = [first, top.edge - first]
 			for location in roof_cells:
@@ -516,7 +542,7 @@ func roof_edge_targets(item: String, hit: Dictionary, ignore: int) -> Array[Dict
 			focus += DIRECTIONS[support.turns]
 		var roles := ["roof_pitch", "crest", "gable_pitch", "ridge"] if kind == "roof" else ["roof_pitch"]
 		for port in edge_interfaces(support):
-			if port.role in roles and (support_kind != "roof" or kind == "gable" or edge_distance(port.edge, horizontal) <= CELL * 0.225 + TOLERANCE):
+			if port.role in roles and (support_kind != "roof" or kind == "gable" or edge_distance(port.edge, horizontal) <= catalog.cell_size * 0.225 + TOLERANCE):
 				edges.append(port.edge)
 	else:
 		return result
@@ -586,7 +612,7 @@ func keeps_water_support(index: int, replacement: Dictionary = {}) -> bool:
 	if not replacement.is_empty() and replacement.elevation == 0 and layer(replacement) == "floor":
 		kept = cells(replacement)
 	for location in cells(previous):
-		if harbor_water.has_point(Vector2(location) * CELL) and location not in kept:
+		if harbor_water.has_point(Vector2(location) * catalog.cell_size) and location not in kept:
 			vacated.append(location)
 	if vacated.is_empty():
 		return true
@@ -610,28 +636,28 @@ func keeps_water_support(index: int, replacement: Dictionary = {}) -> bool:
 
 
 func stair_entrance_blocked(stairs: Dictionary, edge: Dictionary) -> bool:
-	var entrance: Vector2i = cell(stairs) * 2 + DIRECTIONS[stairs.turns]
+	var entrance := edge_key(stair_end(stairs, stairs.turns), stairs.turns)
 	return edge.elevation == stairs.elevation and slot("edge", entrance, stairs.elevation) in slots(edge)
 
 
 func stair_edge_fits(stairs: Dictionary, edge: Dictionary, overlap: AABB) -> bool:
 	var edges := slots(edge)
 	var turns: int = stairs.turns
-	var location := cell(stairs)
 	var side_depth := overlap.size.x if turns % 2 == 0 else overlap.size.z
 	# Side walls can occupy the outer strip of the stair without blocking passage.
 	if side_depth <= STAIR_EDGE_INSET + TOLERANCE:
-		for direction in [(turns + 1) % 4, (turns + 3) % 4]:
-			if slot("edge", location * 2 + DIRECTIONS[direction], edge.elevation) in edges:
-				return true
+		for location in cells(stairs):
+			for side in [(turns + 1) % 4, (turns + 3) % 4]:
+				if slot("edge", edge_key(location, side), edge.elevation) in edges:
+					return true
 
 	# The end wall can meet the ramp below the landing height.
-	var exit: Vector2i = DIRECTIONS[(turns + 2) % 4]
-	var upper: int = stairs.elevation + STOREY
+	var exit := (turns + 2) % 4
+	var upper: int = stairs.elevation + catalog.storey_mm
 	var end_depth := overlap.size.z if turns % 2 == 0 else overlap.size.x
 	return edge.item in ["wall", "halfWall", "brickWall"] and edge.elevation == stairs.elevation \
 		and end_depth <= STAIR_EDGE_INSET + TOLERANCE \
-		and slot("edge", location * 2 + exit, edge.elevation) in edges \
+		and slot("edge", edge_key(stair_end(stairs, exit), exit), edge.elevation) in edges \
 		and overlap.end.y <= floor_center(upper) + TOLERANCE
 
 
@@ -651,11 +677,12 @@ func connection_snap(item: String, hit: Dictionary) -> Dictionary:
 		if support_kind == "roof":
 			return wall_under_roof(item, support, point)
 		if support_kind == "ridge" and not support.get("surfaceRidge", false):
-			var across: Vector2i = DIRECTIONS[support.turns]
-			for location in [cell(support), cell(support) + across]:
-				var roof := support_at(slot("roof", location, support.elevation))
-				if not roof.is_empty() and interfaces_join(roof, support):
-					return wall_under_roof(item, roof, point)
+			var ridge: Dictionary = edge_interfaces(support, "ridge")[0]
+			for port: Dictionary in interfaces_by_edge.get(ridge.edge, []):
+				if interface_matches(ridge, port):
+					var snap := wall_under_roof(item, placements[port.owner], point)
+					if not snap.is_empty():
+						return snap
 		if support_kind == "gable":
 			return wall_snap(support, hit, true)
 	return {}
@@ -663,20 +690,20 @@ func connection_snap(item: String, hit: Dictionary) -> Dictionary:
 
 func wall_under_roof(item: String, roof: Dictionary, point: Vector3) -> Dictionary:
 	var local := placement_transform(roof).affine_inverse() * point
-	var closest := CELL * 0.225 + TOLERANCE
+	var closest := catalog.cell_size * 0.225 + TOLERANCE
 	var result := {}
 	for port in edge_interfaces(roof):
 		if not compatible_interfaces(port.role, "wall_top"):
 			continue
 		var side: int = (port.side - int(roof.turns) + 4) % 4
-		var distance := absf(Vector2(local.x, local.z).dot(Vector2(DIRECTIONS[side])) - CELL / 2.0)
+		var distance := absf(Vector2(local.x, local.z).dot(Vector2(DIRECTIONS[side])) - catalog.cell_size / 2.0)
 		if distance >= closest:
 			continue
 		var snap := interface_target(item, port.side, port, "wall_top")
 		if snap.is_empty():
 			continue
 		var span := width({"item": item, "turns": port.side})
-		var horizontal := Vector2(point.x, point.z) - Vector2(span - Vector2i.ONE + DIRECTIONS[port.side]) * CELL / 2.0
+		var horizontal := Vector2(point.x, point.z) - Vector2(span - Vector2i.ONE + DIRECTIONS[port.side]) * catalog.cell_size / 2.0
 		var first: Vector2i = snap.location
 		var last := first + Vector2i.ONE - span
 		snap.location = grid_cell(horizontal).clamp(first.min(last), first.max(last))
@@ -696,7 +723,7 @@ func wall_snap(wall: Dictionary, hit: Dictionary, corner_only := false) -> Dicti
 	var horizontal := Vector2(point.x, point.z)
 	var midpoint := center(wall)
 	var offset := (horizontal - midpoint).dot(Vector2(along))
-	var at_end := absf(offset) >= (span / 2.0 - 0.18) * CELL
+	var at_end := absf(offset) >= (span / 2.0 - 0.18) * catalog.cell_size
 	var hits_end_face := absf(Vector2(normal.x, normal.z).dot(Vector2(along))) > 0.5
 	var top: float = edge_interfaces(wall, "wall_top")[0].heights.x if not corner_only else point.y
 	if not corner_only and point.y >= top - 0.10 and not (at_end and hits_end_face):
@@ -705,7 +732,7 @@ func wall_snap(wall: Dictionary, hit: Dictionary, corner_only := false) -> Dicti
 		var end_direction := along if offset > 0.0 else -along
 		return {
 			"turns": turns, "wall": wall, "endDirection": end_direction,
-			"endpoint": grid_cell(midpoint, CELL / 2) + end_direction * span,
+			"endpoint": grid_cell(midpoint, catalog.cell_size / 2) + end_direction * span,
 			"inside": -facing, "cornerOnly": corner_only,
 		}
 	return {}
@@ -719,7 +746,7 @@ func wall_snap_target(p: Dictionary, snap: Dictionary) -> Dictionary:
 	if snap.has("top"):
 		if p.turns % 2 != snap.turns % 2:
 			return {}
-		var horizontal: Vector2 = snap.point - (Vector2(span - Vector2i.ONE + direction) * CELL / 2.0)
+		var horizontal: Vector2 = snap.point - (Vector2(span - Vector2i.ONE + direction) * catalog.cell_size / 2.0)
 		var first := cell(wall)
 		if p.turns != snap.turns:
 			first += DIRECTIONS[snap.turns]
@@ -795,22 +822,27 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3, snap: Di
 				# Reversing the triangle keeps it on the same floor edge.
 				var floor_cell := grid_cell(horizontal).clamp(cell(support), cell(support) + width(support) - Vector2i.ONE)
 				var direction: Vector2i = DIRECTIONS[turns]
-				horizontal = Vector2(floor_cell) * CELL
+				horizontal = Vector2(floor_cell) * catalog.cell_size
 				var offset := Vector2(point.x, point.z) - horizontal
 				var edge_distance := maxf(absf(offset.x), absf(offset.y))
-				if edge_distance >= CELL * 0.275:
+				if edge_distance >= catalog.cell_size * 0.275:
 					var distance := offset.dot(Vector2(direction))
 					if absf(distance) + TOLERANCE < edge_distance:
 						return {}
 					p.edgeFacing = turns if distance > 0.0 else (turns + 2) % 4
 					if distance < 0.0:
-						horizontal -= Vector2(direction) * CELL
+						horizontal -= Vector2(direction) * catalog.cell_size
 		elif support.item == "stairs" and (kind == "floor" or item == "stairs") and bounds.end.y - point.y <= 0.15:
-			p.elevation = support.elevation + STOREY
-			var landing_cell := cell(support)
-			if item != "stairs" or turns != (int(support.turns) + 2) % 4:
-				landing_cell += DIRECTIONS[(int(support.turns) + 2) % 4]
-			horizontal = Vector2(landing_cell) * CELL
+			p.elevation = support.elevation + catalog.storey_mm
+			var landing := stair_landing(support)
+			if item == "stairs":
+				if turns == (int(support.turns) + 2) % 4:
+					landing = stair_end(support, turns)
+				var anchor := landing - stair_end({"item": item, "turns": turns, "x": 0, "z": 0}, turns)
+				p.x = anchor.x
+				p.z = anchor.y
+				return p
+			horizontal = Vector2(landing) * catalog.cell_size
 		elif kind == "floor" and (support_kind == "edge" or catalog.items[support.item].get("floor_support", false)) and bounds.end.y - point.y <= 0.10:
 			p.elevation = surface_elevation(bounds.end.y)
 			var midpoint := center(support)
@@ -821,9 +853,9 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3, snap: Di
 					delta = viewer.x - midpoint.x if along_x else viewer.z - midpoint.y
 				var side := 1.0 if delta >= 0.0 else -1.0
 				if along_x:
-					horizontal.x = midpoint.x + side * CELL / 2
+					horizontal.x = midpoint.x + side * catalog.cell_size / 2
 				else:
-					horizontal.y = midpoint.y + side * CELL / 2
+					horizontal.y = midpoint.y + side * catalog.cell_size / 2
 			else:
 				horizontal = midpoint
 		elif normal.y > 0.5:
@@ -839,10 +871,10 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3, snap: Di
 	if kind == "gable" and not p.has("edgeFacing"):
 		p.edgeFacing = turns
 	if kind in ["floor", "object", "roof"] and not fine(p):
-		horizontal -= (Vector2(width(p)) - Vector2.ONE) * CELL / 2.0
+		horizontal -= (Vector2(width(p)) - Vector2.ONE) * catalog.cell_size / 2.0
 	var location := grid_cell(horizontal)
 	if fine(p):
-		var subdivisions := grid_cell(horizontal, CELL / 5)
+		var subdivisions := grid_cell(horizontal, catalog.cell_size / 5)
 		location = grid_cell(Vector2(subdivisions), 5)
 		var offset := subdivisions - location * 5
 		p.offsetX = offset.x
@@ -873,7 +905,7 @@ func nearby_edge_targets(item: String, hit: Dictionary, viewer: Vector3) -> Arra
 		var facing: Vector2i = DIRECTIONS[side]
 		var along: Vector2i = DIRECTIONS[(side + 1) % 4]
 		var length: int = catalog.items[item].width
-		var first := grid_cell(horizontal - Vector2(facing + along.abs() * (length - 1)) * CELL / 2.0)
+		var first := grid_cell(horizontal - Vector2(facing + along.abs() * (length - 1)) * catalog.cell_size / 2.0)
 		if along.x != 0:
 			first.y = aim_cell.y
 		else:
@@ -936,7 +968,7 @@ func edge_target_score(p: Dictionary, point: Vector3, viewer: Vector3) -> float:
 	var facing := Vector2(DIRECTIONS[p.turns])
 	var delta := Vector2(point.x, point.z) - center(p)
 	var along := Vector2(-facing.y, facing.x)
-	var half_length: float = catalog.items[p.item].width * CELL / 2.0
+	var half_length: float = catalog.items[p.item].width * catalog.cell_size / 2.0
 	var distance := Vector2(delta.dot(facing), maxf(0.0, absf(delta.dot(along)) - half_length)).length()
 	var away := Vector2(point.x - viewer.x, point.z - viewer.z).normalized()
 	return distance - facing.dot(away) * 0.012
@@ -961,11 +993,11 @@ func snap_ridge(p: Dictionary, support: Dictionary) -> bool:
 
 
 func floor_side(support: Dictionary, point: Vector2) -> int:
-	return nearest_edge(point - center(support), Vector2(width(support)) * CELL / 2.0)
+	return nearest_edge(point - center(support), Vector2(width(support)) * catalog.cell_size / 2.0)
 
 
 func nearest_edge(offset: Vector2, half: Vector2) -> int:
-	var closest := CELL * 0.225 + TOLERANCE
+	var closest := catalog.cell_size * 0.225 + TOLERANCE
 	var side := -1
 	for turns in 4:
 		var direction := Vector2(DIRECTIONS[turns])
@@ -994,7 +1026,7 @@ func adjacent_floor(p: Dictionary, support: Dictionary, hit_cell: Vector2i, dire
 func create_body(p: Dictionary) -> StaticBody3D:
 	if not catalog.available(p.item):
 		return null
-	var body := Door.new() if p.item == "woodDoor" else StaticBody3D.new()
+	var body := Door.new() if p.get("opening") == "woodDoor" else StaticBody3D.new()
 	body.collision_layer = 16 if layer(p) == "floor" or p.item == "stairs" else 2
 	body.collision_mask = 0
 	add_parts(body, p)
@@ -1004,7 +1036,7 @@ func create_body(p: Dictionary) -> StaticBody3D:
 
 func add_parts(body: StaticBody3D, p: Dictionary) -> void:
 	var height := rise(p)
-	var visual := catalog.visuals(p.item, height)
+	var visual := catalog.visuals(p.get("opening", p.item), height)
 	body.add_child(visual)
 	var shape := shape_kind(p)
 	if shape == "slab":
@@ -1013,31 +1045,51 @@ func add_parts(body: StaticBody3D, p: Dictionary) -> void:
 	elif p.item == "stairs":
 		var ramp := ConvexPolygonShape3D.new()
 		var points := PackedVector3Array()
-		for x in [-CELL / 2, CELL / 2]:
-			points.append(Vector3(x, -0.016, CELL / 2))
-			points.append(Vector3(x, 0, CELL / 2))
-			points.append(Vector3(x, -0.016, -CELL / 2))
-			points.append(Vector3(x, height, -CELL / 2))
+		var half_depth := catalog.cell_size * int(catalog.items.stairs.depth) / 2.0
+		for x in [-catalog.cell_size / 2, catalog.cell_size / 2]:
+			points.append(Vector3(x, -0.016, half_depth))
+			points.append(Vector3(x, 0, half_depth))
+			points.append(Vector3(x, -0.016, -half_depth))
+			points.append(Vector3(x, height, -half_depth))
 		ramp.points = points
 		var collider := CollisionShape3D.new()
 		collider.shape = ramp
 		body.add_child(collider)
 		body.set_meta("rise", height)
-	elif p.item in ["doorway", "woodDoor", "windowWall"]:
-		var opening := catalog.wall_opening(p.item)
-		var jamb := (CELL - opening.size.x) / 2.0
-		for side in [-1, 1]:
-			catalog.box_shape(body, Vector3(jamb, Catalog.WALL, 0.10), Vector3(side * (CELL - jamb) / 2, Catalog.WALL / 2, 0))
-		catalog.box_shape(body, Vector3(opening.size.x, Catalog.WALL - opening.end.y, 0.10), Vector3(0, (Catalog.WALL + opening.end.y) / 2.0, 0))
-		if opening.position.y > 0.0:
-			catalog.box_shape(body, Vector3(opening.size.x, opening.position.y, 0.10), Vector3(0, opening.position.y / 2.0, 0))
-		elif body is Door:
+	elif p.has("opening"):
+		add_wall_opening_shapes(body, catalog.wall_opening(p.opening))
+		if body is Door:
 			body.setup_panel(catalog, visual)
 	elif shape == "box":
 		var bounds := catalog.item_bounds(p.item)
 		catalog.box_shape(body, bounds.size, bounds.get_center())
 	else:
 		catalog.collider_meshes(body, visual)
+
+
+func add_wall_opening_shapes(body: StaticBody3D, opening: Rect2) -> void:
+	var sections := [
+		Rect2(-catalog.cell_size / 2.0, 0, opening.position.x + catalog.cell_size / 2.0, catalog.wall_height),
+		Rect2(opening.end.x, 0, catalog.cell_size / 2.0 - opening.end.x, catalog.wall_height),
+		Rect2(opening.position.x, opening.end.y, opening.size.x, catalog.wall_height - opening.end.y),
+	]
+	if opening.position.y > 0.0:
+		sections.append(Rect2(opening.position.x, 0, opening.size.x, opening.position.y))
+	for section: Rect2 in sections:
+		var midpoint := section.get_center()
+		var size := Vector3(section.size.x, section.size.y, Catalog.WALL_DEPTH)
+		var collision := catalog.box_shape(body, size, Vector3(midpoint.x, midpoint.y, 0))
+		collision.set_meta("wall_span", Vector2(section.position.y, section.end.y))
+
+	# The installation ray can select the host through its opening.
+	var pick := StaticBody3D.new()
+	pick.name = "OpeningPick"
+	pick.collision_layer = OPENING_PICK_LAYER
+	pick.collision_mask = 0
+	body.add_child(pick)
+	var midpoint := opening.get_center()
+	var size := Vector3(opening.size.x, opening.size.y, Catalog.WALL_DEPTH)
+	catalog.box_shape(pick, size, Vector3(midpoint.x, midpoint.y, 0))
 
 
 func sync() -> void:
@@ -1055,19 +1107,15 @@ func sync() -> void:
 		if layer(p) == "gable" and not p.has("edgeFacing"):
 			# Older saves inferred the inset from the wall on this edge.
 			var edge: Vector2i = cell(p) * 2 + DIRECTIONS[p.turns]
-			var wall := support_at(slot("edge", edge, p.elevation - WALL_MM))
+			var wall := support_at(slot("edge", edge, p.elevation - catalog.storey_mm))
 			p.edgeFacing = wall.get("turns", p.turns)
-		if layer(p) in ["roof", "ridge"]:
-			var mesh := body.get_child(0).get_child(0) as MeshInstance3D
-			var joins := visual_joins(p)
-			mesh.mesh = catalog.roof_model(layer(p), joins)
 		if p.item == "stairs" and not is_equal_approx(body.get_meta("rise"), rise(p)):
 			for child in body.get_children():
 				child.free()
 			add_parts(body, p)
 		elif shape_kind(p) == "box":
-			sync_landing_wall(p, body.get_child(1) as CollisionShape3D)
-		elif body is Door:
+			sync_landing_wall(p, body)
+		if body is Door:
 			doors.append(body)
 		body.set_meta("placement", i)
 		body.transform = placement_transform(p)
@@ -1077,6 +1125,11 @@ func sync() -> void:
 			if not interfaces_by_edge.has(port.edge):
 				interfaces_by_edge[port.edge] = []
 			interfaces_by_edge[port.edge].append(port)
+	for i in placements.size():
+		var p: Dictionary = placements[i]
+		if bodies[i] != null and layer(p) in ["roof", "ridge"]:
+			var mesh := bodies[i].get_child(0).get_child(0) as MeshInstance3D
+			mesh.mesh = catalog.roof_model(p.item, visual_joins(p))
 	rebuild_walk_surface()
 
 
@@ -1099,13 +1152,15 @@ func roof_joins(p: Dictionary, ignore: int) -> int:
 		var neighbor := support_at(slot(kind, location, p.elevation), ignore)
 		if neighbor.is_empty():
 			continue
-		var same_profile: bool = layer(neighbor) == "roof" and neighbor.turns == turns if kind == "roof" else neighbor.get("surfaceRidge", false) == p.get("surfaceRidge", false)
+		var same_profile: bool = neighbor.item == p.item and neighbor.turns == turns if kind == "roof" else neighbor.get("surfaceRidge", false) == p.get("surfaceRidge", false)
 		if same_profile:
 			mask |= Catalog.RoofKit.OMIT_LEFT if side == 0 else Catalog.RoofKit.OMIT_RIGHT
 	if kind == "roof":
-		var across := support_at(slot("roof", cell(p) - direction, p.elevation), ignore)
-		if not across.is_empty() and layer(across) == "roof" and across.turns == (turns + 2) % 4:
-			mask |= Catalog.RoofKit.OMIT_HIGH
+		var crest: Dictionary = edge_interfaces(p, "crest")[0]
+		for port: Dictionary in interfaces_by_edge.get(crest.edge, []):
+			if port.owner != ignore and port.side != crest.side and port.role == "crest" and interface_matches(crest, port):
+				mask |= Catalog.RoofKit.OMIT_HIGH
+				break
 	return mask
 
 
@@ -1123,19 +1178,33 @@ func nearby_door(point: Vector3) -> Door:
 	return nearest
 
 
-func sync_landing_wall(wall: Dictionary, collision: CollisionShape3D) -> void:
+func sync_landing_wall(wall: Dictionary, body: StaticBody3D) -> void:
 	var location := cell(wall)
 	var turns: int = wall.turns
 	var bounds := catalog.item_bounds(wall.item)
-	var size := bounds.size
+	var top := bounds.end.y
 	# The centered wall crosses the stair exit from either adjoining cell.
 	if is_stair_at(location, (turns + 2) % 4, wall.elevation) \
 		or is_stair_at(location + DIRECTIONS[turns], turns, wall.elevation):
-		var ramp_at_wall := STOREY / 1000.0 * (1.0 - size.z / (2.0 * CELL))
-		size.y = clampf(ramp_at_wall - bounds.position.y - 0.01, 0.01, size.y)
+		var depth := catalog.cell_size * int(catalog.items.stairs.depth)
+		var ramp_at_wall := catalog.wall_height * (1.0 - bounds.size.z / (2.0 * depth))
+		top = clampf(ramp_at_wall - 0.01, bounds.position.y + 0.01, top)
+	if not wall.has("opening"):
+		resize_wall_collision(body.get_child(1) as CollisionShape3D, bounds.position.y, top)
+		return
+	for child in body.get_children():
+		if child.has_meta("wall_span"):
+			var span: Vector2 = child.get_meta("wall_span")
+			resize_wall_collision(child as CollisionShape3D, span.x, minf(span.y, top))
+
+
+func resize_wall_collision(collision: CollisionShape3D, bottom: float, top: float) -> void:
+	collision.disabled = top <= bottom
+	if collision.disabled:
+		return
 	var shape := collision.shape as BoxShape3D
-	shape.size = size
-	collision.position.y = bounds.position.y + size.y / 2.0
+	shape.size.y = top - bottom
+	collision.position.y = (bottom + top) / 2.0
 
 
 func is_stair_at(location: Vector2i, turns: int, elevation: int) -> bool:
@@ -1143,7 +1212,8 @@ func is_stair_at(location: Vector2i, turns: int, elevation: int) -> bool:
 	if index < 0:
 		return false
 	var p: Dictionary = placements[index]
-	return p.item == "stairs" and int(p.turns) == turns
+	return p.item == "stairs" and int(p.turns) == turns \
+		and stair_end(p, (turns + 2) % 4) == location
 
 
 func rebuild_walk_surface() -> void:
@@ -1154,21 +1224,21 @@ func rebuild_walk_surface() -> void:
 	for p: Dictionary in placements:
 		if p.item == "stairs":
 			var exit: Vector2i = DIRECTIONS[(p.turns + 2) % 4]
-			landings[slot("edge", (cell(p) + exit) * 2 - exit, p.elevation + STOREY)] = true
+			landings[slot("edge", stair_landing(p) * 2 - exit, p.elevation + catalog.storey_mm)] = true
 	for p: Dictionary in placements:
 		if layer(p) == "floor":
 			var top := floor_top(p.elevation)
 			for location in cells(p):
-				var midpoint := Vector2(location) * CELL
+				var midpoint := Vector2(location) * catalog.cell_size
 				var transform := Transform3D(Basis.IDENTITY, Vector3(midpoint.x, top - SLAB, midpoint.y))
 				var sides: Array[bool] = []
 				for side: Vector2i in DIRECTIONS:
 					sides.append(not has_floor(location + side, p.elevation) and not landings.has(slot("edge", location * 2 + side, p.elevation)))
-				append_walk_faces(faces, transform, SLAB, SLAB, 0.0, sides)
+				append_walk_faces(faces, transform, SLAB, SLAB, 0.0, sides, catalog.cell_size)
 		elif p.item == "stairs":
-			var landing: Vector2i = cell(p) + DIRECTIONS[(p.turns + 2) % 4]
-			var sides: Array[bool] = [true, true, not has_floor(landing, p.elevation + STOREY), true]
-			append_walk_faces(faces, placement_transform(p), 0.0, rise(p), -0.016, sides)
+			var sides: Array[bool] = [true, true, not has_floor(stair_landing(p), p.elevation + catalog.storey_mm), true]
+			var depth := catalog.cell_size * int(catalog.items.stairs.depth)
+			append_walk_faces(faces, placement_transform(p), 0.0, rise(p), -0.016, sides, depth)
 	if faces.is_empty():
 		walk_shape.shape = null
 	else:
@@ -1177,11 +1247,12 @@ func rebuild_walk_surface() -> void:
 		walk_shape.shape = mesh
 
 
-func append_walk_faces(faces: PackedVector3Array, transform: Transform3D, front: float, back: float, bottom: float, sides: Array[bool]) -> void:
-	var half := CELL / 2
+func append_walk_faces(faces: PackedVector3Array, transform: Transform3D, front: float, back: float, bottom: float, sides: Array[bool], depth: float) -> void:
+	var half := catalog.cell_size / 2.0
+	var half_depth := depth / 2.0
 	var corners := [
-		Vector3(-half, front, half), Vector3(half, front, half),
-		Vector3(half, back, -half), Vector3(-half, back, -half),
+		Vector3(-half, front, half_depth), Vector3(half, front, half_depth),
+		Vector3(half, back, -half_depth), Vector3(-half, back, -half_depth),
 	]
 	var top := PackedVector3Array()
 	var base := PackedVector3Array()
@@ -1212,12 +1283,37 @@ func put(p: Dictionary, index: int) -> int:
 		bodies.append(create_body(p))
 		index = placements.size() - 1
 	else:
-		if bodies[index] != null:
-			bodies[index].free()
-		placements[index] = p
-		bodies[index] = create_body(p)
+		replace_body(index, p)
 	sync()
 	return index
+
+
+func replace_body(index: int, p: Dictionary) -> void:
+	if bodies[index] != null:
+		bodies[index].free()
+	placements[index] = p
+	bodies[index] = create_body(p)
+
+
+func can_set_wall_opening(index: int, opening: String) -> bool:
+	if index < 0 or index >= placements.size() or bodies[index] == null:
+		return false
+	var wall: Dictionary = placements[index]
+	return wall.item == "wall" and wall.get("opening", "") != opening \
+		and (opening.is_empty() or (opening in Catalog.WOOD_OPENINGS and catalog.available(opening)))
+
+
+func set_wall_opening(index: int, opening: String) -> bool:
+	if not can_set_wall_opening(index, opening):
+		return false
+	var wall: Dictionary = placements[index].duplicate()
+	if opening.is_empty():
+		wall.erase("opening")
+	else:
+		wall.opening = opening
+	replace_body(index, wall)
+	sync()
+	return true
 
 
 func remove(index: int) -> bool:

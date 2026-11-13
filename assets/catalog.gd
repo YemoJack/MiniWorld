@@ -1,15 +1,20 @@
 extends RefCounted
 
-const CELL := 0.85
-const WALL_HEIGHT := 1.12
-const HALF_WALL_HEIGHT := WALL_HEIGHT / 2.0
+const LEGACY_CELL := 0.85
+const LEGACY_WALL_HEIGHT := 1.12
+const WALL_HEIGHT := 1.50
+const CELL := WALL_HEIGHT / 1.618
 const WALL_DEPTH := 0.10
-const BRICK_WALL_SIZE := Vector3(CELL, WALL_HEIGHT, 0.14)
 const SLAB_THICKNESS := 0.054
 const ROOF_THICKNESS := 0.06
+const QUARTER := 1.0 / 4.0
+const THIRD := 1.0 / 3.0
+const HALF := 1.0 / 2.0
+const TWO_THIRDS := 2.0 / 3.0
+const PREVIOUS_STONE_LOW_HEIGHT := 0.54
 
 # Local sides are +Z, +X, -Z, -X. Heights run along +X or +Z.
-# Side -1 uses the piece's own grid edge. Wall heights use its model bounds.
+# Side -1 uses the piece's own grid edge. Profile heights are fractions of the roof rise.
 const PLACEMENT_PROFILES := {
 	"floor": {"anchor": "cell", "shape": "slab", "interfaces": [
 		["slab", 0, Vector2.ZERO], ["slab", 1, Vector2.ZERO],
@@ -19,15 +24,15 @@ const PLACEMENT_PROFILES := {
 		["wall_base", -1], ["wall_top", -1],
 	]},
 	"gable": {"anchor": "edge", "shape": "gable", "conflicts": ["edge"], "interfaces": [
-		["gable_base", -1, Vector2.ZERO], ["gable_pitch", -1, Vector2(0, HALF_WALL_HEIGHT)],
+		["gable_base", -1, Vector2.ZERO], ["gable_pitch", -1, Vector2(0, 1)],
 	]},
 	"roof": {"anchor": "cell", "shape": "slope", "interfaces": [
-		["eave", 0, Vector2.ZERO], ["crest", 2, Vector2.ONE * HALF_WALL_HEIGHT],
-		["roof_pitch", 1, Vector2(HALF_WALL_HEIGHT, 0)], ["roof_pitch", 3, Vector2(HALF_WALL_HEIGHT, 0)],
+		["eave", 0, Vector2.ZERO], ["crest", 2, Vector2.ONE],
+		["roof_pitch", 1, Vector2(1, 0)], ["roof_pitch", 3, Vector2(1, 0)],
 		["bearing", 1, Vector2.ZERO], ["bearing", 3, Vector2.ZERO],
 	]},
 	"ridge": {"anchor": "edge", "shape": "mesh", "interfaces": [
-		["ridge", -1, Vector2.ONE * HALF_WALL_HEIGHT],
+		["ridge", -1, Vector2.ONE],
 	]},
 	"object": {"anchor": "cell", "shape": "mesh"},
 }
@@ -50,12 +55,21 @@ const ITEMS := {
 	"harborRope": {"label": "绳栏", "category": "structure", "subcategory": "fences", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/pirate-harbor/rope-fence.tscn"},
 	"harborBarrel": {"label": "木桶", "category": "furniture", "subcategory": "storage", "layer": "object", "width": 1, "depth": 1, "scale": 0.40, "fine": true, "asset": "res://local-assets/models/pirate-harbor/barrel.tscn"},
 	"wall": {"label": "墙壁", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "shape": "box"},
-	"doorway": {"label": "门洞", "category": "structure", "subcategory": "openings", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0},
-	"woodDoor": {"label": "木门", "category": "structure", "subcategory": "openings", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0},
-	"windowWall": {"label": "窗墙", "category": "structure", "subcategory": "openings", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0},
-	"woodRoofSlope": {"label": "木直坡片", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1},
+	"doorway": {"label": "门洞", "category": "structure", "subcategory": "openings"},
+	"woodDoor": {"label": "木门", "category": "structure", "subcategory": "openings"},
+	"windowWall": {"label": "木窗", "category": "structure", "subcategory": "openings"},
+	"wideWindow": {"label": "宽木窗", "category": "structure", "subcategory": "openings"},
+	"woodRoofSlopeLow": {"label": "木坡片 1/4", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1, "height_ratio": QUARTER},
+	"woodRoofSlopeThird": {"label": "木坡片 1/3", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1, "height_ratio": THIRD},
+	"woodRoofSlope": {"label": "木坡片 1/2", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1, "height_ratio": HALF},
+	"woodRoofSlopeTwoThirds": {"label": "木坡片 2/3", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1, "height_ratio": TWO_THIRDS},
+	"woodRoofSlopeHigh": {"label": "木坡片 1/1", "category": "structure", "subcategory": "roofs", "layer": "roof", "width": 1, "depth": 1, "height_ratio": 1.0},
 	"woodRoofRidge": {"label": "木屋脊条", "category": "structure", "subcategory": "roofs", "layer": "ridge", "width": 1, "depth": 1},
-	"woodRoofGable": {"label": "木半山墙", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1},
+	"woodRoofGableLow": {"label": "木三角墙 1/4", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1, "height_ratio": QUARTER},
+	"woodRoofGableThird": {"label": "木三角墙 1/3", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1, "height_ratio": THIRD},
+	"woodRoofGable": {"label": "木三角墙 1/2", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1, "height_ratio": HALF},
+	"woodRoofGableTwoThirds": {"label": "木三角墙 2/3", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1, "height_ratio": TWO_THIRDS},
+	"woodRoofGableHigh": {"label": "木三角墙 1/1", "category": "structure", "subcategory": "roofs", "layer": "gable", "width": 1, "depth": 1, "height_ratio": 1.0},
 	"flowers": {"label": "花坛", "category": "garden", "subcategory": "flowers", "layer": "object", "width": 1, "depth": 1, "scale": 0.78, "asset": "res://assets/models/flower-bed-708e73.glb", "fine": true},
 	"crate": {"label": "木箱", "category": "furniture", "subcategory": "storage", "layer": "object", "width": 1, "depth": 1, "scale": 0.94, "asset": "res://assets/models/wooden-crate-e46521.glb", "fine": true},
 	"lantern": {"label": "提灯", "category": "landscape", "subcategory": "lights", "layer": "object", "width": 1, "depth": 1, "scale": 1.35, "asset": "res://assets/models/farm-lantern-747dc8.glb", "fine": true},
@@ -65,7 +79,9 @@ const ITEMS := {
 	"cafeCounter": {"label": "咖啡台", "category": "furniture", "subcategory": "tables", "layer": "object", "width": 2, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/cafe-counter.glb"},
 	"gazebo": {"label": "凉亭", "category": "structure", "subcategory": "frames", "layer": "object", "width": 2, "depth": 2, "scale": 0.0063, "asset": "res://local-assets/models/gazebo.glb"},
 	"picketFence": {"label": "木围栏", "category": "structure", "subcategory": "fences", "layer": "edge", "width": 1, "depth": 1, "scale": 0.0033, "asset": "res://local-assets/models/picket-fence.glb"},
-	"halfWall": {"label": "半高墙", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "shape": "box", "asset": "res://local-assets/models/half-wall.glb"},
+	"quarterWall": {"label": "木墙 1/4", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "shape": "box", "height_ratio": QUARTER},
+	"halfWall": {"label": "半高墙 1/2", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "shape": "box", "height_ratio": HALF, "asset": "res://local-assets/models/half-wall.glb"},
+	"twoThirdsWall": {"label": "木墙 2/3", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "shape": "box", "height_ratio": TWO_THIRDS},
 	"glassWall": {"label": "玻璃墙", "category": "structure", "subcategory": "walls", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/glass-wall.glb"},
 	"glassDoor": {"label": "玻璃门", "category": "structure", "subcategory": "openings", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/glass-door.glb"},
 	"shopWindow": {"label": "展示窗", "category": "structure", "subcategory": "openings", "layer": "edge", "width": 1, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/shop-window.glb"},
@@ -77,42 +93,43 @@ const ITEMS := {
 	"skylight": {"label": "玻璃地板", "category": "structure", "subcategory": "floors", "layer": "floor", "width": 1, "depth": 1, "scale": 1.0, "asset": "res://local-assets/models/skylight.glb"},
 	"brickWall": {
 		"label": "砖墙", "category": "structure", "subcategory": "walls", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": BRICK_WALL_SIZE, "shape": "box",
+		"width": 1, "depth": 1, "fit_size": Vector3(LEGACY_CELL, LEGACY_WALL_HEIGHT, 0.14), "shape": "box",
 		"asset": GANG + "SM_Bld_Wall_Brick_01_Solid.tscn",
 	},
 	"stoneLowWall": {
-		"label": "石矮墙", "category": "structure", "subcategory": "walls", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": Vector3(CELL, 0.54, 0.18),
+		"label": "石矮墙 1/3", "category": "structure", "subcategory": "walls", "layer": "edge",
+		"width": 1, "depth": 1, "height_ratio": THIRD,
+		"fit_size": Vector3(LEGACY_CELL, PREVIOUS_STONE_LOW_HEIGHT, 0.18),
 		"asset": PIRATE + "Buildings/SM_Bld_Stone_Wall_01.tscn",
 	},
 	"brickWindow": {
 		"label": "砖墙窗", "category": "structure", "subcategory": "openings", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": BRICK_WALL_SIZE,
+		"width": 1, "depth": 1, "fit_size": Vector3(LEGACY_CELL, LEGACY_WALL_HEIGHT, 0.14),
 		"asset": GANG + "SM_Bld_Wall_Brick_Window_01_Solid.tscn",
 	},
 	"stoneArch": {
 		"label": "石拱门", "category": "structure", "subcategory": "openings", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": Vector3(CELL, 1.16, 0.20),
+		"width": 1, "depth": 1, "fit_size": Vector3(LEGACY_CELL, 1.16, 0.20),
 		"asset": DUNGEON + "Walls/SM_Env_Door_Frame_Round_01.tscn",
 	},
 	"stoneArcade": {
 		"label": "四面拱亭", "category": "structure", "subcategory": "frames", "layer": "object",
-		"width": 2, "depth": 2, "fit_size": Vector3(2 * CELL, 1.45, 2 * CELL),
+		"width": 2, "depth": 2, "fit_size": Vector3(2 * LEGACY_CELL, 1.45, 2 * LEGACY_CELL),
 		"asset": PIRATE + "Buildings/SM_Bld_Cuba_Arch_01.tscn",
 	},
 	"stoneColumn": {
 		"label": "方石柱", "category": "structure", "subcategory": "frames", "layer": "object",
-		"width": 1, "depth": 1, "fit_size": Vector3(0.34, WALL_HEIGHT, 0.34), "floor_support": true,
+		"width": 1, "depth": 1, "fit_size": Vector3(0.34, LEGACY_WALL_HEIGHT, 0.34), "floor_support": true,
 		"asset": DUNGEON + "Optimized/SM_Env_Pillar_Square_Simple_01.tscn",
 	},
 	"timberFence": {
 		"label": "粗木栅栏", "category": "structure", "subcategory": "fences", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": Vector3(CELL, 0.47, 0.08),
+		"width": 1, "depth": 1, "fit_size": Vector3(LEGACY_CELL, 0.47, 0.08),
 		"asset": PIRATE + "Props/SM_Prop_Fence_01.tscn",
 	},
 	"stoneRailing": {
 		"label": "石栏杆", "category": "structure", "subcategory": "fences", "layer": "edge",
-		"width": 1, "depth": 1, "fit_size": Vector3(CELL, 0.48, 0.13),
+		"width": 1, "depth": 1, "fit_size": Vector3(LEGACY_CELL, 0.48, 0.13),
 		"asset": DUNGEON + "Misc/SM_Env_Railing_01.tscn",
 	},
 	"ornateStoneFloor": {

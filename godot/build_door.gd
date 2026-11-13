@@ -7,6 +7,7 @@ const SWING_CHECKS := 12
 var is_open := false
 var hinge: Node3D
 var panel: CollisionShape3D
+var panel_offset: Vector3
 var swing_from := 0.0
 var swing_to := 0.0
 var swing_time := SWING_TIME
@@ -14,11 +15,9 @@ var swing_time := SWING_TIME
 
 func setup_panel(catalog: Catalog, visual: Node3D) -> void:
 	hinge = visual.get_node("DoorHinge")
-	panel = catalog.box_shape(self, Catalog.DOOR_PANEL_SIZE, hinge.position + panel_offset())
-
-
-func panel_offset() -> Vector3:
-	return Vector3(Catalog.DOOR_PANEL_SIZE.x / 2, Catalog.DOOR_PANEL_SIZE.y / 2, 0)
+	var size := catalog.door_panel_size()
+	panel_offset = Vector3(size.x / 2.0, size.y / 2.0, 0)
+	panel = catalog.box_shape(self, size, hinge.position + panel_offset)
 
 
 func toggle(from: Vector3) -> void:
@@ -34,7 +33,7 @@ func toggle(from: Vector3) -> void:
 
 func panel_pose(angle: float) -> Transform3D:
 	var rotation_basis := Basis(Vector3.UP, angle)
-	return Transform3D(rotation_basis, hinge.position + rotation_basis * panel_offset())
+	return Transform3D(rotation_basis, hinge.position + rotation_basis * panel_offset)
 
 
 func blocked(pose: Transform3D) -> bool:

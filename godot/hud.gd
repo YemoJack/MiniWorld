@@ -5,14 +5,18 @@ signal view_toggled
 signal projection_toggled
 signal reset_requested
 signal island_chosen(id: String)
-signal island_created
+signal island_created(title: String)
+signal island_renamed(id: String, title: String)
+signal settings_opened
 signal island_config_requested
 signal expansion_confirmed
 signal import_requested(path: String)
+signal export_requested(id: String, path: String)
 signal item_chosen(id: String)
 signal move_requested
 signal rotate_requested
 signal remove_requested
+signal remove_opening_requested
 signal cancel_requested
 signal touch_key(key: Key, down: bool)
 signal place_requested
@@ -20,6 +24,7 @@ signal jump_requested
 signal door_requested
 
 const Catalog = preload("res://godot/catalog.gd")
+const SaveSettings = preload("res://godot/save_settings.gd")
 const CATEGORIES := {
 	"all": "全部", "recent": "最近", "structure": "结构", "furniture": "家具",
 	"garden": "园艺", "landscape": "景观",
@@ -53,6 +58,7 @@ var place_button: Button
 var move_button: Button
 var rotate_button: Button
 var remove_button: Button
+var remove_opening_button: Button
 var cancel_button: Button
 var items: GridContainer
 var item_scroll: ScrollContainer
@@ -75,7 +81,7 @@ var active_item := ""
 var touch_pad: VBoxContainer
 var touch_mode := ""
 var toast_generation := 0
-var chooser: FileDialog
+var settings: SaveSettings
 var expansion_dialog: ConfirmationDialog
 var build_state: Array
 
@@ -105,6 +111,7 @@ func setup(assets: Catalog) -> void:
 	islands.focus_mode = Control.FOCUS_NONE
 	top.add_child(islands)
 	islands.get_popup().id_pressed.connect(on_island_menu)
+	button(top, "设置", open_settings)
 
 	browse = HBoxContainer.new()
 	root.add_child(browse)
@@ -121,18 +128,19 @@ func setup(assets: Catalog) -> void:
 	setup_build_actions()
 
 	crosshair = centered_label("⊹", 30, Control.PRESET_CENTER, 0.0)
-	hint = centered_label("WASD 移动  ·  E/Q 升降  ·  拖动转向  ·  准星对准后点击选中", 14, Control.PRESET_CENTER_TOP, 26.0)
+	hint = centered_label("WASD 移动  ·  E/Q 升降  ·  拖动转向  ·  准星对准即选中", 14, Control.PRESET_CENTER_TOP, 26.0)
 	toast = centered_label("", 15, Control.PRESET_CENTER_TOP, 67.0)
-	chooser = FileDialog.new()
-	chooser.title = "导入岛屿"
-	chooser.access = FileDialog.ACCESS_FILESYSTEM
-	chooser.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	chooser.filters = PackedStringArray(["*.json ; 岛屿存档"])
-	chooser.use_native_dialog = true
-	chooser.file_selected.connect(func(path: String): import_requested.emit(path))
-	root.add_child(chooser)
+	toast.z_index = 1
+	settings = SaveSettings.new()
+	root.add_child(settings)
+	settings.island_chosen.connect(island_chosen.emit)
+	settings.island_created.connect(island_created.emit)
+	settings.island_renamed.connect(island_renamed.emit)
+	settings.import_requested.connect(import_requested.emit)
+	settings.export_requested.connect(export_requested.emit)
+	settings.expansion_requested.connect(island_config_requested.emit)
 	expansion_dialog = ConfirmationDialog.new()
-	expansion_dialog.title = "测试配置"
+	expansion_dialog.title = "扩建岛屿"
 	expansion_dialog.ok_button_text = "扩建"
 	expansion_dialog.confirmed.connect(func(): expansion_confirmed.emit())
 	root.add_child(expansion_dialog)
@@ -213,6 +221,7 @@ func setup_build_actions() -> void:
 	place_button.add_theme_stylebox_override("hover", palette_style("#94692a", "#f8d49e", 8, 3))
 	rotate_button = build_action(build_actions, "旋转", func(): rotate_requested.emit())
 	move_button = build_action(build_actions, "移动", func(): move_requested.emit())
+	remove_opening_button = build_action(build_actions, "拆门窗", func(): remove_opening_requested.emit())
 	remove_button = build_action(build_actions, "删除", func(): remove_requested.emit())
 	cancel_button = build_action(build_actions, "取消", func(): cancel_requested.emit())
 
@@ -343,22 +352,18 @@ func set_islands(state: Dictionary) -> void:
 		if island.id == state.activeId:
 			islands.text = island.name + "  ⌄"
 			popup.set_item_checked(i, true)
-	popup.add_separator()
-	popup.add_item("新建平坦岛", 1000000)
-	popup.add_item("导入存档…", 1000001)
-	popup.add_item("测试配置…", 1000002)
+	settings.refresh(state)
 
 
 func on_island_menu(id: int) -> void:
-	if id == 1000000:
-		island_created.emit()
-	elif id == 1000001:
-		chooser.popup_centered_ratio(0.7)
-	elif id == 1000002:
-		island_config_requested.emit()
-	else:
-		var popup := islands.get_popup()
-		island_chosen.emit(popup.get_item_metadata(popup.get_item_index(id)))
+	var popup := islands.get_popup()
+	island_chosen.emit(popup.get_item_metadata(popup.get_item_index(id)))
+
+
+func open_settings() -> void:
+	settings.show()
+	settings.save_list.grab_focus()
+	settings_opened.emit()
 
 
 func show_island_config(current: Vector2i, next: Vector2i) -> void:
@@ -386,10 +391,24 @@ func set_mode(mode: String, perspective := false) -> void:
 	if editing and not palette_loaded:
 		palette_loaded = true
 		for id: String in catalog.items:
-			if catalog.available(id):
+			if catalog.available(id) and not catalog.items[id].get("hidden", false):
 				available_items.append(id)
 		change_category(category)
 	update_touch(mode)
+
+
+func set_catalog(assets: Catalog) -> void:
+	if catalog == assets:
+		return
+	catalog = assets
+	palette_loaded = false
+	available_items.clear()
+	for id in recent_items.duplicate():
+		if not catalog.available(id):
+			recent_items.erase(id)
+	category_buttons["recent"].disabled = recent_items.is_empty()
+	if category == "recent" and recent_items.is_empty():
+		category = "all"
 
 
 func set_door_action(action: String) -> void:
@@ -472,8 +491,9 @@ func choose_from_palette(id: String) -> void:
 func thumbnail(id: String) -> Texture2D:
 	if DisplayServer.get_name() == "headless":
 		return null
-	if thumb_textures.has(id):
-		return thumb_textures[id]
+	var key := "%s:%s" % [catalog.legacy, id]
+	if thumb_textures.has(key):
+		return thumb_textures[key]
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(96, 66)
 	viewport.own_world_3d = true
@@ -501,12 +521,12 @@ func thumbnail(id: String) -> Texture2D:
 	ambient.rotation_degrees = Vector3(-10, 150, 0)
 	ambient.light_energy = 0.48
 	viewport.add_child(ambient)
-	thumb_textures[id] = viewport.get_texture()
-	return thumb_textures[id]
+	thumb_textures[key] = viewport.get_texture()
+	return thumb_textures[key]
 
 
-func set_build_state(item: String, selected: bool, valid: bool) -> void:
-	var next := [item, selected, valid]
+func set_build_state(item: String, selected: bool, valid: bool, has_opening := false) -> void:
+	var next := [item, selected, valid, has_opening]
 	if next == build_state:
 		return
 	build_state = next
@@ -515,8 +535,9 @@ func set_build_state(item: String, selected: bool, valid: bool) -> void:
 	place_button.disabled = not (placing and valid)
 	move_button.disabled = not selected or placing
 	remove_button.disabled = move_button.disabled
-	rotate_button.disabled = not (selected or placing)
-	cancel_button.disabled = rotate_button.disabled
+	remove_opening_button.visible = has_opening and not placing
+	rotate_button.disabled = not (selected or (placing and item not in Catalog.WOOD_OPENINGS))
+	cancel_button.disabled = not placing
 	for id: String in item_buttons:
 		item_buttons[id].set_pressed_no_signal(id == item and placing)
 	crosshair.modulate = Color("#b8ffd8") if valid or not placing else Color("#ffb6a3")

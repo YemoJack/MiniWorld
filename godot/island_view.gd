@@ -17,6 +17,7 @@ const PET_ROUTE := [
 @export_enum("flat", "cabin", "harbor") var terrain: String = "flat"
 @onready var pet := get_node_or_null("Pet") as Node3D
 
+var cell_size: float
 var grid: MeshInstance3D
 var obstacles: Array[AABB]
 var rim: PackedVector2Array
@@ -31,6 +32,7 @@ var elapsed := 0.0
 
 
 func setup(catalog: Catalog) -> void:
+	cell_size = catalog.cell_size
 	if terrain == "harbor":
 		var shed := catalog.visuals("harborShed")
 		shed.position = Vector3(-0.9, 0, -2.9)
@@ -119,8 +121,7 @@ func resize_land(size: Vector2i) -> void:
 
 
 func build_harbor() -> void:
-	var cell := Catalog.CELL
-	harbor_water = Rect2(-1.5 * cell, -0.5 * cell, land_bounds.end.x + 1.5 * cell + 1.0, 2.0 * cell)
+	harbor_water = Rect2(-1.5 * cell_size, -0.5 * cell_size, land_bounds.end.x + 1.5 * cell_size + 1.0, 2.0 * cell_size)
 	var inlet := PackedVector2Array([
 		harbor_water.position, Vector2(harbor_water.end.x, harbor_water.position.y),
 		harbor_water.end, Vector2(harbor_water.position.x, harbor_water.end.y),
@@ -207,8 +208,8 @@ func create_grid(builder: RefCounted) -> void:
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	lines.surface_begin(Mesh.PRIMITIVE_LINES, material)
 	var segments: Dictionary = {}
-	var first := (land_bounds.position / Catalog.CELL).floor()
-	var last := (land_bounds.end / Catalog.CELL).ceil()
+	var first := (land_bounds.position / cell_size).floor()
+	var last := (land_bounds.end / cell_size).ceil()
 	for x in range(int(first.x), int(last.x) + 1):
 		for z in range(int(first.y), int(last.y) + 1):
 			if not builder.within_island(Vector2i(x, z)):
@@ -220,8 +221,8 @@ func create_grid(builder: RefCounted) -> void:
 			for edge in [Vector4i(a.x, a.y, b.x, b.y), Vector4i(a.x, a.y, c.x, c.y), Vector4i(c.x, c.y, d.x, d.y), Vector4i(b.x, b.y, d.x, d.y)]:
 				segments[edge] = true
 	for edge: Vector4i in segments:
-		lines.surface_add_vertex(Vector3(edge.x * Catalog.CELL / 2, 0.013, edge.y * Catalog.CELL / 2))
-		lines.surface_add_vertex(Vector3(edge.z * Catalog.CELL / 2, 0.013, edge.w * Catalog.CELL / 2))
+		lines.surface_add_vertex(Vector3(edge.x * cell_size / 2, 0.013, edge.y * cell_size / 2))
+		lines.surface_add_vertex(Vector3(edge.z * cell_size / 2, 0.013, edge.w * cell_size / 2))
 	lines.surface_end()
 	if grid == null:
 		grid = MeshInstance3D.new()

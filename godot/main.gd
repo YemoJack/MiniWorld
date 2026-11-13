@@ -41,6 +41,7 @@ var drone: Node3D
 var rotors: Array[MeshInstance3D]
 var cloud_positions: Array[Vector3]
 var ghost: Node3D
+var preview_wall: StaticBody3D
 var ghost_material := StandardMaterial3D.new()
 var outline := MeshInstance3D.new()
 var outline_material := StandardMaterial3D.new()
@@ -51,14 +52,12 @@ var draft_turns := 0
 var draft_candidates: Array[Dictionary]
 var draft_rotation_pending := false
 var moving := -1
+var opening_host := -1
 var target: Dictionary
 var valid := false
-var hovered := -1
-var select_pending := false
 var place_pending := false
 var door_pending := false
 var pressed: Dictionary
-var drag_distance := 0.0
 var dragging := false
 
 
@@ -73,7 +72,6 @@ func _ready() -> void:
 	outline_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	add_child(outline)
 	add_child(detail_grid)
-	create_detail_grid()
 	islands = Islands.new(catalog)
 	hud.setup(catalog)
 	hud.build_toggled.connect(toggle_build)
@@ -81,14 +79,18 @@ func _ready() -> void:
 	hud.projection_toggled.connect(toggle_projection)
 	hud.reset_requested.connect(reset_view)
 	hud.island_chosen.connect(switch_island)
-	hud.island_created.connect(func(): switch_island(islands.new_island()))
+	hud.island_created.connect(create_island)
+	hud.island_renamed.connect(rename_island)
+	hud.settings_opened.connect(release_controls)
 	hud.island_config_requested.connect(show_island_config)
 	hud.expansion_confirmed.connect(expand_island)
 	hud.import_requested.connect(import_save)
+	hud.export_requested.connect(export_save)
 	hud.item_chosen.connect(choose_item)
 	hud.move_requested.connect(move_selected)
 	hud.rotate_requested.connect(rotate_item)
 	hud.remove_requested.connect(remove_selected)
+	hud.remove_opening_requested.connect(remove_selected_opening)
 	hud.cancel_requested.connect(cancel)
 	hud.place_requested.connect(func(): place_pending = true)
 	hud.jump_requested.connect(func(): player.requested_jump = mode == "player")
@@ -134,6 +136,9 @@ func create_drone() -> void:
 func show_island() -> void:
 	clear_selection()
 	var data := islands.active()
+	catalog = islands.active_catalog()
+	hud.set_catalog(catalog)
+	create_detail_grid()
 	if island == null or island.terrain != data.terrain or island.grid != null:
 		if island != null:
 			island.free()
@@ -143,6 +148,8 @@ func show_island() -> void:
 	island.setup(catalog)
 	if builder == null:
 		builder = Builder.new(catalog, structures)
+	else:
+		builder.catalog = catalog
 	builder.has_pond = data.terrain == "cabin"
 	builder.obstacles = island.obstacles
 	island.resize_land(Islands.island_size(data))
@@ -153,7 +160,7 @@ func show_island() -> void:
 	island.create_grid(builder)
 	player.yaw = 0.0 if data.terrain == "harbor" else PI
 	player.pitch = -0.30
-	player.spawn = Vector3(2 * Catalog.CELL, 0.02, -2.8) if data.terrain == "harbor" else Vector3(0, 0.02, 2.8)
+	player.spawn = Vector3(2 * catalog.cell_size, 0.02, -2.8) if data.terrain == "harbor" else Vector3(0, 0.02, 2.8)
 	player.respawn()
 	aim_overview()
 	set_mode("overview" if mode == "overview" else "player")
@@ -200,9 +207,28 @@ func position_clouds() -> void:
 
 
 func switch_island(id: String) -> void:
-	islands.state.activeId = id
-	save()
+	if id == islands.state.activeId:
+		return
+	if not islands.select_island(id):
+		hud.show_message("存档未写入")
+		return
+	hud.settings.hide()
 	show_island()
+
+
+func create_island(title: String) -> void:
+	if islands.new_island(title):
+		hud.settings.hide()
+		show_island()
+	else:
+		hud.show_message("无法创建岛屿")
+
+
+func rename_island(id: String, title: String) -> void:
+	if islands.rename_island(id, title):
+		hud.set_islands(islands.state)
+	else:
+		hud.show_message("无法重命名岛屿")
 
 
 func save() -> void:
@@ -212,9 +238,14 @@ func save() -> void:
 
 func import_save(path: String) -> void:
 	if islands.merge_import(path):
+		hud.settings.hide()
 		show_island()
 	else:
 		hud.show_message("无法导入这个岛屿存档")
+
+
+func export_save(id: String, path: String) -> void:
+	hud.show_message("已导出存档" if islands.export_island(id, path) else "无法导出存档")
 
 
 func reset_view() -> void:
@@ -235,7 +266,6 @@ func set_mode(next: String) -> void:
 	island.grid.visible = mode == "build"
 	pressed.clear()
 	dragging = false
-	select_pending = false
 	place_pending = false
 	door_pending = false
 	match mode:
@@ -267,7 +297,7 @@ func toggle_build() -> void:
 		if island.terrain == "harbor":
 			build_yaw = PI
 			build_pitch = -0.58
-			drone.position = Vector3(2 * Catalog.CELL, 1.1, -3 * Catalog.CELL)
+			drone.position = Vector3(2 * catalog.cell_size, 1.1, -3 * catalog.cell_size)
 		aim_drone()
 		set_mode("build")
 	else:
@@ -298,7 +328,7 @@ func held(key: Key) -> int:
 
 
 func _physics_process(delta: float) -> void:
-	if hud.expansion_dialog.visible:
+	if hud.settings.visible or hud.expansion_dialog.visible:
 		return
 	var move := Vector2(held(KEY_D) - held(KEY_A), held(KEY_W) - held(KEY_S)).limit_length()
 	var turn := Vector2(held(KEY_RIGHT) - held(KEY_LEFT), held(KEY_DOWN) - held(KEY_UP)) * delta * 1.42
@@ -333,6 +363,11 @@ func update_nearby_door() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if hud.settings.visible:
+		if event.is_action_pressed("ui_cancel"):
+			hud.settings.hide()
+			get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
 			KEY_SPACE:
@@ -345,16 +380,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_DELETE, KEY_BACKSPACE:
 				remove_selected()
 			KEY_ESCAPE:
-				if mode == "build" and draft_item.is_empty() and selected < 0:
+				if mode == "build" and draft_item.is_empty():
 					toggle_build()
 				else:
 					cancel()
 	elif event is InputEventMouseButton:
 		if event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
-			if not event.pressed and dragging and event.button_index == MOUSE_BUTTON_LEFT and drag_distance < 5.0:
-				select_pending = mode == "build" and draft_item.is_empty()
 			dragging = event.pressed
-			drag_distance = 0.0
 		elif mode == "overview" and event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 			orbit_distance = clampf(orbit_distance * (0.90 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.1), 5.0, 27.0)
 			aim_overview()
@@ -362,7 +394,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_mask & (MOUSE_BUTTON_MASK_LEFT | MOUSE_BUTTON_MASK_RIGHT) == 0:
 			dragging = false
 			return
-		drag_distance += event.relative.length()
 		var amount: Vector2 = event.relative * 0.005
 		if mode == "player":
 			player.turn(amount)
@@ -380,28 +411,21 @@ func clear_selection() -> void:
 		builder.bodies[moving].show()
 	selected = -1
 	moving = -1
+	opening_host = -1
 	draft_item = ""
 	draft_candidates.clear()
 	draft_rotation_pending = false
 	target = {}
 	valid = false
-	hovered = -1
-	select_pending = false
 	place_pending = false
-	if ghost != null:
-		ghost.free()
-		ghost = null
-	outline.hide()
-	detail_grid.hide()
+	update_ghost()
+	update_outline(-1)
 	hud.set_build_state("", false, false)
 
 
 func cancel() -> void:
-	if mode != "build":
-		return
-	var previous := moving
-	clear_selection()
-	selected = previous
+	if mode == "build" and not draft_item.is_empty():
+		clear_selection()
 
 
 func choose_item(id: String) -> void:
@@ -424,7 +448,8 @@ func rotate_item() -> void:
 	if mode != "build":
 		return
 	if not draft_item.is_empty():
-		draft_rotation_pending = true
+		if draft_item not in Catalog.WOOD_OPENINGS:
+			draft_rotation_pending = true
 	elif selected >= 0:
 		var p: Dictionary = builder.placements[selected].duplicate()
 		if builder.layer(p) in ["edge", "gable"]:
@@ -449,38 +474,64 @@ func remove_selected() -> void:
 		save()
 
 
+func remove_selected_opening() -> void:
+	if mode == "build" and draft_item.is_empty() and builder.set_wall_opening(selected, ""):
+		save()
+
+
 func update_build() -> void:
 	var origin := build_camera.global_position
 	var ray_end := origin - build_camera.global_basis.z * 24
-	var query := PhysicsRayQueryParameters3D.create(origin, ray_end, 19)
+	var installing := draft_item in Catalog.WOOD_OPENINGS
+	var mask := 19 | Builder.OPENING_PICK_LAYER if installing else 19
+	var query := PhysicsRayQueryParameters3D.create(origin, ray_end, mask)
 	if moving >= 0:
 		query.exclude = [builder.bodies[moving].get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	hovered = -1 if hit.is_empty() else int(hit.collider.get_meta("placement", -1))
-	if not draft_item.is_empty():
+	var collider := hit.get("collider") as CollisionObject3D
+	if collider != null and collider.collision_layer == Builder.OPENING_PICK_LAYER:
+		collider = collider.get_parent() as CollisionObject3D
+	var aimed := -1 if collider == null else int(collider.get_meta("placement", -1))
+	selected = aimed if draft_item.is_empty() else -1
+	if installing:
+		update_opening_draft(aimed)
+	elif not draft_item.is_empty():
 		update_draft(hit, origin, ray_end)
-	if select_pending:
-		select_pending = false
-		if draft_item.is_empty():
-			selected = hovered
 	if place_pending:
 		place_pending = false
 		if not draft_item.is_empty() and valid:
-			var destination := builder.put(target, moving)
+			var destination := -1
+			if installing:
+				if builder.set_wall_opening(opening_host, draft_item):
+					destination = opening_host
+			else:
+				destination = builder.put(target, moving)
 			if destination >= 0:
-				var was_move := moving >= 0
-				if was_move:
+				if moving >= 0:
 					clear_selection()
-					selected = destination
 				else:
+					opening_host = -1
 					valid = false
 					target = {}
 					draft_candidates.clear()
 					update_ghost()
 				save()
-	var outlined_item := selected if selected >= 0 else hovered
-	update_outline(outlined_item if draft_item.is_empty() else -1)
-	hud.set_build_state(draft_item, selected >= 0, valid)
+	update_outline(opening_host if installing else selected)
+	var has_opening: bool = selected >= 0 and builder.placements[selected].has("opening")
+	hud.set_build_state(draft_item, selected >= 0, valid, has_opening)
+
+
+func update_opening_draft(aimed: int) -> void:
+	var host := aimed if builder.can_set_wall_opening(aimed, draft_item) else -1
+	if host == opening_host:
+		return
+	opening_host = host
+	valid = host >= 0
+	target = {}
+	if valid:
+		target = builder.placements[host].duplicate()
+		target.opening = draft_item
+	update_ghost()
 
 
 func update_draft(hit: Dictionary, origin: Vector3, ray_end := Vector3.INF) -> void:
@@ -525,6 +576,9 @@ func update_edge_draft(hit: Dictionary, origin: Vector3, ray_end: Vector3) -> vo
 			var candidate := builder.target(draft_item, (start + step) % 4, hit, origin, snap)
 			if not candidate.is_empty() and candidate not in candidates:
 				candidates.append(candidate)
+	if moving >= 0 and builder.placements[moving].has("opening"):
+		for candidate in candidates:
+			candidate.opening = builder.placements[moving].opening
 	if candidates == draft_candidates and not draft_rotation_pending:
 		return
 	draft_candidates = candidates
@@ -570,32 +624,39 @@ func create_detail_grid() -> void:
 	var lines := ImmediateMesh.new()
 	lines.surface_begin(Mesh.PRIMITIVE_LINES, outline_material)
 	for i in range(6):
-		var axis := Catalog.CELL * (i / 5.0 - 0.5)
-		lines.surface_add_vertex(Vector3(axis, 0, -Catalog.CELL / 2))
-		lines.surface_add_vertex(Vector3(axis, 0, Catalog.CELL / 2))
-		lines.surface_add_vertex(Vector3(-Catalog.CELL / 2, 0, axis))
-		lines.surface_add_vertex(Vector3(Catalog.CELL / 2, 0, axis))
+		var axis := catalog.cell_size * (i / 5.0 - 0.5)
+		lines.surface_add_vertex(Vector3(axis, 0, -catalog.cell_size / 2))
+		lines.surface_add_vertex(Vector3(axis, 0, catalog.cell_size / 2))
+		lines.surface_add_vertex(Vector3(-catalog.cell_size / 2, 0, axis))
+		lines.surface_add_vertex(Vector3(catalog.cell_size / 2, 0, axis))
 	lines.surface_end()
 	detail_grid.mesh = lines
 	detail_grid.hide()
 
 
 func update_ghost() -> void:
+	if is_instance_valid(preview_wall):
+		preview_wall.show()
+	preview_wall = null
 	if ghost != null:
 		ghost.free()
 		ghost = null
 	detail_grid.hide()
 	if target.is_empty():
 		return
-	ghost = catalog.visuals(draft_item, builder.rise(target, moving), builder.visual_joins(target, moving))
-	ghost_material.albedo_color = Color(0.49, 0.88, 0.67, 0.55) if valid else Color(1.0, 0.34, 0.25, 0.53)
-	for mesh in ghost.find_children("*", "MeshInstance3D", true, false):
-		mesh.material_override = ghost_material
-		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	ghost = catalog.visuals(target.get("opening", target.item), builder.rise(target, moving), builder.visual_joins(target, moving))
+	if opening_host >= 0:
+		preview_wall = builder.bodies[opening_host]
+		preview_wall.hide()
+	else:
+		ghost_material.albedo_color = Color(0.49, 0.88, 0.67, 0.55) if valid else Color(1.0, 0.34, 0.25, 0.53)
+		for mesh in ghost.find_children("*", "MeshInstance3D", true, false):
+			mesh.material_override = ghost_material
+			mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ghost)
 	ghost.transform = builder.placement_transform(target, moving)
 	if builder.fine(target):
-		var horizontal := Vector2(builder.cell(target)) * Catalog.CELL
+		var horizontal := Vector2(builder.cell(target)) * catalog.cell_size
 		detail_grid.position = Vector3(horizontal.x, ghost.position.y + 0.006, horizontal.y)
 		detail_grid.show()
 
