@@ -11,6 +11,7 @@ const TOLERANCE := 0.001
 const STAIR_EDGE_INSET := 0.18
 const MODULES := ["wall", "halfWall", "floor", "woodRoofSlope", "woodRoofRidge"]
 const OPENING_PICK_LAYER := 32
+const DOOR_PICK_LAYER := 64
 
 var catalog: Catalog
 var container: Node3D
@@ -20,8 +21,6 @@ var harbor_water: Rect2
 var obstacles: Array[AABB]
 var placements: Array
 var bodies: Array[StaticBody3D]
-var doors: Array[Door]
-var seats: Array[Seat]
 var occupied: Dictionary
 var interfaces_by_edge: Dictionary
 var walk_shape: CollisionShape3D
@@ -1097,10 +1096,10 @@ func add_wall_opening_shapes(body: StaticBody3D, opening: Rect2) -> void:
 		var collision := catalog.box_shape(body, size, Vector3(midpoint.x, midpoint.y, 0))
 		collision.set_meta("wall_span", Vector2(section.position.y, section.end.y))
 
-	# The installation ray can select the host through its opening.
+	# Build mode can select any opening. Interaction can also target an open door.
 	var pick := StaticBody3D.new()
 	pick.name = "OpeningPick"
-	pick.collision_layer = OPENING_PICK_LAYER
+	pick.collision_layer = OPENING_PICK_LAYER | DOOR_PICK_LAYER if body is Door else OPENING_PICK_LAYER
 	pick.collision_mask = 0
 	body.add_child(pick)
 	var midpoint := opening.get_center()
@@ -1111,8 +1110,6 @@ func add_wall_opening_shapes(body: StaticBody3D, opening: Rect2) -> void:
 func sync() -> void:
 	occupied.clear()
 	interfaces_by_edge.clear()
-	doors.clear()
-	seats.clear()
 	for i in range(placements.size()):
 		for key in slots(placements[i]):
 			occupied[key] = i
@@ -1132,10 +1129,6 @@ func sync() -> void:
 			add_parts(body, p)
 		elif shape_kind(p) == "box":
 			sync_landing_wall(p, body)
-		if body is Door:
-			doors.append(body)
-		elif body is Seat:
-			seats.append(body)
 		body.set_meta("placement", i)
 		body.transform = placement_transform(p)
 		body.reset_physics_interpolation()
@@ -1181,29 +1174,6 @@ func roof_joins(p: Dictionary, ignore: int) -> int:
 				mask |= Catalog.RoofKit.OMIT_HIGH
 				break
 	return mask
-
-
-func nearby_door(point: Vector3) -> Door:
-	var nearest: Door
-	var distance := INF
-	for door in doors:
-		var local := door.to_local(point)
-		if absf(local.x) > 0.52 or absf(local.z) > 0.90 or local.y < -0.16 or local.y > 0.42:
-			continue
-		var candidate := local.length_squared()
-		if candidate < distance:
-			nearest = door
-			distance = candidate
-	return nearest
-
-
-func nearby_seat(player: CharacterBody3D, capsule: CollisionShape3D) -> Dictionary:
-	var nearest := {}
-	for seat in seats:
-		var place := seat.nearest_place(player, capsule)
-		if not place.is_empty() and place.distance < nearest.get("distance", INF):
-			nearest = place
-	return nearest
 
 
 func sync_landing_wall(wall: Dictionary, body: StaticBody3D) -> void:

@@ -20,6 +20,11 @@ func setup_panel(catalog: Catalog, visual: Node3D) -> void:
 	panel = catalog.box_shape(self, size, hinge.position + panel_offset)
 
 
+func within_reach(point: Vector3) -> bool:
+	var local := to_local(point)
+	return absf(local.x) <= 0.65 and absf(local.z) <= 0.90 and local.y >= -0.16 and local.y <= 0.42
+
+
 func toggle(from: Vector3) -> void:
 	if swing_time < SWING_TIME:
 		return

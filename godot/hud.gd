@@ -66,6 +66,7 @@ var item_scroll: ScrollContainer
 var subcategory_tabs: HFlowContainer
 var expand_button: Button
 var crosshair: Label
+var player_crosshair: Control
 var hint: Label
 var toast: Label
 var thumb_textures: Dictionary
@@ -129,6 +130,12 @@ func setup(assets: Catalog) -> void:
 	setup_build_actions()
 
 	crosshair = centered_label("⊹", 30, Control.PRESET_CENTER, 0.0)
+	player_crosshair = Control.new()
+	player_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(player_crosshair)
+	player_crosshair.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	player_crosshair.draw.connect(draw_player_crosshair)
+	player_crosshair.resized.connect(player_crosshair.queue_redraw)
 	hint = centered_label("WASD 移动  ·  E/Q 升降  ·  拖动转向  ·  准星对准即选中", 14, Control.PRESET_CENTER_TOP, 26.0)
 	toast = centered_label("", 15, Control.PRESET_CENTER_TOP, 67.0)
 	toast.z_index = 1
@@ -385,6 +392,8 @@ func set_mode(mode: String, perspective := false) -> void:
 	build_actions.visible = editing
 	exit_button.visible = editing
 	crosshair.visible = editing
+	player_crosshair.visible = mode == "player"
+	hint.text = "WASD 移动  ·  E/Q 升降  ·  拖动转向  ·  准星对准即选中"
 	hint.visible = editing and not DisplayServer.is_touchscreen_available()
 	view_button.text = "岛屿" if mode == "player" else "角色"
 	view_button.visible = not editing
@@ -415,10 +424,22 @@ func set_catalog(assets: Catalog) -> void:
 
 func set_interaction_action(action: String) -> void:
 	interaction_button.visible = not action.is_empty()
+	player_crosshair.modulate = Color.WHITE if action.is_empty() else Color("#b8ffd8")
 	if interaction_button.visible:
 		var title := action if touch_pad != null else "F  " + action
 		if interaction_button.text != title:
 			interaction_button.text = title
+
+
+func draw_player_crosshair() -> void:
+	var center := player_crosshair.size / 2.0
+	player_crosshair.draw_circle(center, 4.0, Color(0.09, 0.13, 0.12, 0.75), true, -1.0, true)
+	player_crosshair.draw_circle(center, 2.5, Color.WHITE, true, -1.0, true)
+
+
+func set_mouse_look(captured: bool) -> void:
+	hint.text = "Esc 释放鼠标" if captured else "点击场景控制镜头"
+	hint.show()
 
 
 func change_category(key: String) -> void:

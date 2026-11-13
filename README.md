@@ -6,7 +6,9 @@
 
 用 Godot 4.7 打开根目录的 `project.godot`。首次打开时等待 GLB 导入完成。主场景 `godot/main.tscn` 在编辑器里预览木屋岛和角色。按 **F5** 进入游戏后会加载当前存档的岛屿，可从右上角切换平坦岛、木屋岛和港口岛。
 
-- **角色**：WASD 行走，空格跳跃，拖动或按方向键转向。靠近木门、板凳、长椅或咖啡椅，按 F 或点屏幕上的交互按钮。咖啡椅从正面使用，长椅会选择最近的可用坐点。坐下后再次交互即可站起。点「岛屿」进入总览，可环绕、缩放，并切换正交和透视。
+- **角色**：WASD 按镜头方向移动，A/D 侧移，S 后退，Shift + W 跑步，空格跳跃。鼠标转向，滚轮调整越肩镜头距离。按 Esc 释放鼠标操作菜单，点击场景恢复控制。触屏可拖动转向。
+- **交互**：用准星对准附近的木门、板凳、长椅或咖啡椅，按 F 或点交互按钮。咖啡椅从正面使用，长椅会选择最近的可用坐点。角色直接到达坐点前方并播放坐下动作。再次交互站起时，镜头转到角色背后。
+- **岛屿总览**：点「岛屿」进入总览，可环绕、缩放，并切换正交和透视。
 - **建造**：点「建造」进入无人机视角。WASD 移动，E/Q 升降，拖动或按方向键转向。建造栏支持分类筛选和「最近」，点右上角「展开」可显示更多物件。从建造栏选择物件后对准位置，点右侧「放置」。没有待放置物件时，用准星对准已有物件即可选中，再点「旋转」「移动」或「删除」。移动后点「放置」确认，点「取消」放弃当前操作，点右下角「退出」离开建造模式。
 - **多层建造**：对准楼板边缘、墙顶或楼梯出口接铺构件。墙体的厚度中心贴住格线，楼板以厚度中线为楼层高度。小物件用 5×5 子格定位，角色可沿楼梯斜坡上下楼。
 - **新岛建造尺寸**：基础格边长约 0.927，整墙高 1.50，半墙高 0.75。按 1.68 米的角色换算，整墙约宽 1.854 米、高 3 米，宽高比为 1∶1.618。一面墙占一条格边，楼梯占两格进深。
@@ -46,5 +48,7 @@ copy(localStorage.getItem('miniworld.islands.v1'))
 本地 Synty 模型和贴图放在 `local-assets/models/` 和 `local-assets/textures/`。主角场景位于 `local-assets/models/spy-player/`，使用 Spy Kit 特工和 Mixamo 的待机、行走、跳跃动作。建造模式从 `local-assets/models/spy-drone/` 加载 Spy Kit 无人机。缺少本地素材时，游戏使用内置角色、无人机和建材。
 
 特工的座椅交互需要本地动画库 `local-assets/models/spy-player/seating.res`。它由 Mixamo 的坐下和起身动作转换到特工骨架。内置方块角色使用程序生成的坐姿和起身过渡。
+
+特工的侧移、后退和跑步循环来自 Quaternius 的 [Universal Animation Library](https://quaternius.com/packs/universalanimationlibrary.html) 和 [Universal Animation Library 2](https://quaternius.com/packs/universalanimationlibrary2.html)（CC0）。通过 [KinemIQ 动画库](https://kinemiq.app/studio/data/catalog.json)取得片段，转换为适配特工骨架的原地动画，保存在 `assets/animations/locomotion.res`。
 
 `local-assets/` 由 Git 忽略。整包素材可放在 `local-assets/packs/`，并在该目录创建空的 `.gdignore`，让 Godot 跳过导入。

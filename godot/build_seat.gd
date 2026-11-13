@@ -52,6 +52,6 @@ func nearest_place(player: CharacterBody3D, capsule: CollisionShape3D) -> Dictio
 		if not space.intersect_shape(clearance, 1).is_empty():
 			continue
 		var forward := global_basis.z * side
-		best = {"seat": self, "sit": sit, "stand": stand, "yaw": atan2(forward.x, forward.z), "distance": distance}
+		best = {"seat": self, "sit": sit, "stand": stand, "yaw": atan2(forward.x, forward.z)}
 		best_distance = distance
 	return best

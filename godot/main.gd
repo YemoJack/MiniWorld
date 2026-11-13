@@ -11,11 +11,15 @@ const ISLAND_SCENES := {
 }
 const HUD = preload("res://godot/hud.gd")
 const Player = preload("res://godot/player.gd")
+const Door = preload("res://godot/build_door.gd")
+const Seat = preload("res://godot/build_seat.gd")
 const SPY_DRONE := "res://local-assets/models/spy-drone/SM_Prop_Drone_01.tscn"
 const ORBIT_YAW := 0.595
 const ORBIT_PITCH := 0.445
 const ORBIT_DISTANCE := 18.9
 const CLOUD_CLEARANCE := 3.0
+const WORLD_PICK_MASK := 19 # Terrain, solid structures and slab/ramp picking bodies.
+const PLAYER_MOUSE_SENSITIVITY := 0.003
 
 @onready var island_root: Node3D = $Island
 @onready var island := island_root.get_node_or_null("CabinIsland") as IslandView
@@ -94,7 +98,7 @@ func _ready() -> void:
 	hud.remove_opening_requested.connect(remove_selected_opening)
 	hud.cancel_requested.connect(cancel)
 	hud.place_requested.connect(func(): place_pending = true)
-	hud.jump_requested.connect(func(): player.requested_jump = mode == "player")
+	hud.jump_requested.connect(request_player_jump)
 	hud.interaction_requested.connect(func(): interaction_pending = mode == "player")
 	hud.touch_key.connect(func(key: Key, down: bool): pressed[key] = down)
 	get_window().focus_exited.connect(release_controls)
@@ -104,6 +108,21 @@ func _ready() -> void:
 func release_controls() -> void:
 	pressed.clear()
 	dragging = false
+	interaction_pending = false
+	player.stop_movement()
+	if mode == "player" and hud.touch_pad == null:
+		set_mouse_look(false)
+
+
+func set_mouse_look(captured: bool) -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if captured else Input.MOUSE_MODE_VISIBLE
+	if mode == "player" and hud.touch_pad == null:
+		hud.set_mouse_look(captured)
+
+
+func request_player_jump() -> void:
+	if mode == "player":
+		player.request_jump()
 
 
 func create_drone() -> void:
@@ -159,8 +178,7 @@ func show_island() -> void:
 	builder.harbor_water = island.harbor_water
 	builder.load_island(data.placements)
 	island.create_grid(builder)
-	player.yaw = 0.0 if data.terrain == "harbor" else PI
-	player.pitch = -0.30
+	player.reset_camera(PI if data.terrain == "harbor" else 0.0)
 	player.spawn = Vector3(2 * catalog.cell_size, 0.02, -2.8) if data.terrain == "harbor" else Vector3(0, 0.02, 2.8)
 	player.respawn()
 	aim_overview()
@@ -261,8 +279,7 @@ func export_save(id: String, path: String) -> void:
 
 
 func reset_view() -> void:
-	player.yaw = 0.0 if island.terrain == "harbor" else PI
-	player.pitch = -0.30
+	player.reset_camera(PI if island.terrain == "harbor" else 0.0)
 	player.respawn()
 	orbit_yaw = ORBIT_YAW
 	orbit_pitch = ORBIT_PITCH
@@ -273,6 +290,7 @@ func reset_view() -> void:
 func set_mode(next: String) -> void:
 	if next != "player":
 		player.clear_seating()
+		player.stop_movement()
 	mode = next
 	player.active = mode == "player"
 	player.visible = player.active
@@ -287,6 +305,7 @@ func set_mode(next: String) -> void:
 		"overview": overview.make_current()
 		"build": build_camera.make_current()
 	hud.set_mode(mode, perspective)
+	set_mouse_look(mode == "player" and hud.touch_pad == null and not hud.settings.visible and get_window().has_focus())
 
 
 func toggle_view() -> void:
@@ -348,8 +367,8 @@ func _physics_process(delta: float) -> void:
 	var turn := Vector2(held(KEY_RIGHT) - held(KEY_LEFT), held(KEY_DOWN) - held(KEY_UP)) * delta * 1.42
 	if mode == "player":
 		player.turn(turn)
+		player.drive(move, delta, held(KEY_SHIFT) > 0)
 		update_interaction()
-		player.drive(move, delta)
 	elif mode == "build":
 		build_yaw -= turn.x
 		build_pitch = clampf(build_pitch - turn.y, -1.42, 1.22)
@@ -373,19 +392,47 @@ func update_interaction() -> void:
 		else:
 			action = "站起"
 	elif player.seating == Player.Seating.NONE:
-		var door := builder.nearby_door(player.global_position)
-		var place := builder.nearby_seat(player, player.capsule) if player.is_on_floor() and player.can_use_seats() else {}
-		if not place.is_empty() and (door == null or place.distance <= player.global_position.distance_squared_to(door.global_position)):
+		var target_body := interaction_target()
+		if target_body is Door and target_body.within_reach(player.global_position):
 			if interaction_pending:
-				player.sit_at(place)
-			else:
-				action = "坐下"
-		elif door != null:
-			if interaction_pending:
-				door.toggle(player.global_position)
-			action = "关门" if door.is_open else "开门"
+				target_body.toggle(player.global_position)
+			action = "关门" if target_body.is_open else "开门"
+		elif target_body is Seat and player.is_on_floor() and player.can_use_seats():
+			var place: Dictionary = target_body.nearest_place(player, player.capsule)
+			if not place.is_empty():
+				if interaction_pending:
+					player.sit_at(place)
+				else:
+					action = "坐下"
 	interaction_pending = false
 	hud.set_interaction_action(action)
+
+
+func interaction_target() -> CollisionObject3D:
+	var camera := player.camera
+	var screen_center := camera.get_viewport().get_visible_rect().get_center()
+	var start := camera.project_ray_origin(screen_center)
+	var direction := camera.project_ray_normal(screen_center)
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(start, start + direction * (player.camera_distance + 2.0), WORLD_PICK_MASK, [player.get_rid()])
+	var hit := space.intersect_ray(query)
+	var body := hit.get("collider") as CollisionObject3D
+	if not (body is Door or body is Seat):
+		query.collision_mask = Builder.DOOR_PICK_LAYER
+		var doorway := space.intersect_ray(query)
+		if not doorway.is_empty() and (hit.is_empty() or start.distance_squared_to(doorway.position) < start.distance_squared_to(hit.position)):
+			var door := doorway.collider.get_parent() as Door
+			if door != null and door.is_open:
+				body = door
+				hit = doorway
+	if not (body is Door or body is Seat):
+		return null
+	# An offset camera can see around corners that the character cannot reach.
+	query.from = player.global_position + Vector3.UP * 0.55
+	query.to = hit.position
+	query.collision_mask = WORLD_PICK_MASK
+	var blocker := space.intersect_ray(query)
+	return body if blocker.is_empty() or blocker.collider == body else null
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -397,8 +444,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
 			KEY_SPACE:
-				if mode == "player":
-					player.requested_jump = true
+				request_player_jump()
 			KEY_F:
 				interaction_pending = mode == "player"
 			KEY_R:
@@ -406,17 +452,35 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_DELETE, KEY_BACKSPACE:
 				remove_selected()
 			KEY_ESCAPE:
-				if mode == "build" and draft_item.is_empty():
+				if mode == "player" and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+					release_controls()
+					get_viewport().set_input_as_handled()
+				elif mode == "build" and draft_item.is_empty():
 					toggle_build()
 				else:
 					cancel()
 	elif event is InputEventMouseButton:
 		if event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
-			dragging = event.pressed
-		elif mode == "overview" and event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
-			orbit_distance = clampf(orbit_distance * (0.90 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.1), 5.0, 27.0)
-			aim_overview()
-	elif event is InputEventMouseMotion and dragging:
+			if mode == "player" and hud.touch_pad == null:
+				if event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+					set_mouse_look(true)
+					get_viewport().set_input_as_handled()
+			else:
+				dragging = event.pressed
+		elif event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+			var steps := (1.0 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -1.0)
+			if mode == "player":
+				player.zoom(steps)
+			elif mode == "overview":
+				orbit_distance = clampf(orbit_distance * (0.90 if steps < 0.0 else 1.1), 5.0, 27.0)
+				aim_overview()
+	elif event is InputEventMouseMotion:
+		if mode == "player" and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			player.turn(event.screen_relative * PLAYER_MOUSE_SENSITIVITY)
+			get_viewport().set_input_as_handled()
+			return
+		if not dragging:
+			return
 		if event.button_mask & (MOUSE_BUTTON_MASK_LEFT | MOUSE_BUTTON_MASK_RIGHT) == 0:
 			dragging = false
 			return
@@ -509,13 +573,13 @@ func update_build() -> void:
 	var origin := build_camera.global_position
 	var ray_end := origin - build_camera.global_basis.z * 24
 	var installing := draft_item in Catalog.WOOD_OPENINGS
-	var mask := 19 | Builder.OPENING_PICK_LAYER if installing else 19
+	var mask := WORLD_PICK_MASK | Builder.OPENING_PICK_LAYER if installing else WORLD_PICK_MASK
 	var query := PhysicsRayQueryParameters3D.create(origin, ray_end, mask)
 	if moving >= 0:
 		query.exclude = [builder.bodies[moving].get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	var collider := hit.get("collider") as CollisionObject3D
-	if collider != null and collider.collision_layer == Builder.OPENING_PICK_LAYER:
+	if collider != null and collider.collision_layer & Builder.OPENING_PICK_LAYER:
 		collider = collider.get_parent() as CollisionObject3D
 	var aimed := -1 if collider == null else int(collider.get_meta("placement", -1))
 	selected = aimed if draft_item.is_empty() else -1
