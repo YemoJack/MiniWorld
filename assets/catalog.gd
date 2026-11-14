@@ -155,7 +155,5 @@ const ITEMS := {
 	"pebbles": {"asset": "res://assets/models/lake-pebbles-6c0359.glb"},
 	"lilies": {"asset": "res://assets/models/lily-pads-b0c5d0.glb"},
 	"pine": {"asset": "res://assets/models/campground-pine-stand-0bf4f2.glb"},
-	"cabin": {"asset": "res://assets/models/porch-log-cabin-d2f3ef.glb"},
-	"harborShed": {"scale": 0.62, "asset": "res://local-assets/models/pirate-harbor/shed.tscn"},
 	"spyPlayer": {"asset": "res://local-assets/models/spy-player/spy-player.tscn"},
 }

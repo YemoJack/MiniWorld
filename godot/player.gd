@@ -126,8 +126,8 @@ func respawn() -> void:
 	camera_rig.reset_physics_interpolation()
 
 
-func reset_camera(facing: float) -> void:
-	yaw = facing
+func reset_camera() -> void:
+	yaw = 0.0
 	pitch = CAMERA_DEFAULT_PITCH
 	camera_zoom = CAMERA_DEFAULT_DISTANCE
 
@@ -188,7 +188,7 @@ func drive(input: Vector2, delta: float, run_requested := false) -> void:
 	visual.rotation.y = lerp_angle(visual.rotation.y, yaw + PI, 1.0 - exp(-16.0 * delta))
 	var motion := get_real_velocity()
 	var local_motion := Vector3(motion.x, 0, motion.z).rotated(Vector3.UP, -yaw)
-	animate(Vector2(local_motion.x, -local_motion.z), running, delta)
+	animate(Vector2(local_motion.x, -local_motion.z), axis, running, delta)
 	update_camera(delta)
 
 
@@ -328,7 +328,7 @@ func clear_seating() -> void:
 	visual.reset_physics_interpolation()
 
 
-func animate(motion: Vector2, running: bool, delta: float) -> void:
+func animate(motion: Vector2, input: Vector2, running: bool, delta: float) -> void:
 	var speed := motion.length()
 	var target := "idle"
 	if not is_on_floor():
@@ -336,10 +336,13 @@ func animate(motion: Vector2, running: bool, delta: float) -> void:
 	elif speed > 0.12:
 		if running:
 			target = "run"
-		elif absf(motion.x) > absf(motion.y):
-			target = "walk_right" if motion.x > 0.0 else "walk_left"
 		else:
-			target = "walk_back" if motion.y < 0.0 else "walk"
+			# Keep a held diagonal on one clip as physics velocity fluctuates.
+			var heading := input if not input.is_zero_approx() else motion
+			if absf(heading.x) > absf(heading.y):
+				target = "walk_right" if heading.x > 0.0 else "walk_left"
+			else:
+				target = "walk_back" if heading.y < 0.0 else "walk"
 	if animation != null:
 		var clip: StringName = movement_clips.get(target, movement_clips.get("walk", &"") if speed > 0.12 and is_on_floor() else &"")
 		if not clip.is_empty():

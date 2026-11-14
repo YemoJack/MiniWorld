@@ -202,10 +202,6 @@ func visuals(id: String, rise := 0.0, joins := 0) -> Node3D:
 			box(visual, Vector3(0.34, 0.43, 0.34), Vector3.UP * 0.215, TRIM)
 			for height in [0.10, 0.33]:
 				box(visual, Vector3(0.35, 0.035, 0.35), Vector3.UP * height, Color("#5c5650"))
-		"harborShed":
-			box(visual, Vector3(2.10, 1.45, 1.80), Vector3.UP * 0.725, TRIM)
-			for side in [-1, 1]:
-				box(visual, Vector3(1.26, 0.08, 1.98), Vector3(side * 0.57, 1.66, 0), WOOD).rotation.z = -side * 0.32
 		"wall", "doorway", "woodDoor", "windowWall", "wideWindow", "quarterWall", "halfWall", "twoThirdsWall":
 			mesh_part(visual, wood_model(id)).name = "WallMesh"
 			if id == "woodDoor":

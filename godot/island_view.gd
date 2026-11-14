@@ -1,6 +1,6 @@
 extends Node3D
 
-const Catalog = preload("res://godot/catalog.gd")
+const Builder = preload("res://godot/builder.gd")
 const Islands = preload("res://godot/islands.gd")
 const GROUND_MATERIAL = preload("res://assets/islands/ground.tres")
 const RIM := [
@@ -9,50 +9,12 @@ const RIM := [
 	Vector2(-6.8, 0.45), Vector2(-6.5, -1.7), Vector2(-5.2, -3.5), Vector2(-3.1, -4.65),
 	Vector2(-0.75, -5.05), Vector2(1.7, -4.7), Vector2(3.7, -4.45), Vector2(5.55, -3),
 ]
-const PET_ROUTE := [
-	Vector3(-3.18, 0, 2.12), Vector3(-2.18, 0, 2.75),
-	Vector3(-2.68, 0, 3.95), Vector3(-3.62, 0, 3.25),
-]
 
-@export_enum("flat", "cabin", "harbor") var terrain: String = "flat"
-@onready var pet := get_node_or_null("Pet") as Node3D
-
-var cell_size: float
 var grid: MeshInstance3D
-var obstacles: Array[AABB]
 var rim: PackedVector2Array
 var land_bounds: Rect2
-var harbor_water: Rect2
 var extension: MeshInstance3D
 var base_ground_faces: PackedVector3Array
-var pet_waypoint := 1
-var pet_pause := 1.6
-var pet_gait := 0.0
-var elapsed := 0.0
-
-
-func setup(catalog: Catalog) -> void:
-	cell_size = catalog.cell_size
-	if terrain == "harbor":
-		var shed := catalog.visuals("harborShed")
-		shed.position = Vector3(-0.9, 0, -2.9)
-		shed.rotation.y = PI
-		add_child(shed)
-		obstacles.append(catalog.measured(shed))
-		var body := StaticBody3D.new()
-		body.set_meta("scenery", true)
-		catalog.collider_meshes(body, shed)
-		add_child(body)
-	var scenery := get_node_or_null("Scenery")
-	if scenery != null:
-		for prop: Node3D in scenery.get_children():
-			obstacles.append(catalog.measured(prop))
-			if prop.name != "Lilies":
-				var body := StaticBody3D.new()
-				body.set_meta("scenery", true)
-				for model in prop.get_children():
-					catalog.collider_meshes(body, model)
-				prop.add_child(body)
 
 
 func resize_land(size: Vector2i) -> void:
@@ -74,9 +36,6 @@ func resize_land(size: Vector2i) -> void:
 		rim = Geometry2D.convex_hull(corners)
 		rim.remove_at(rim.size() - 1) # The hull repeats its first point.
 		land_bounds = land_bounds.grow_individual(margin.x, margin.y, margin.x, margin.y)
-	if terrain == "harbor":
-		build_harbor()
-		return
 	if size == Islands.BASE_SIZE:
 		return
 
@@ -96,7 +55,7 @@ func resize_land(size: Vector2i) -> void:
 		outer.append(rim_point(rim, direction))
 		last_angle = angle
 
-	var ground := get_node("Terrain/GroundCollision" if terrain == "cabin" else "GroundCollision") as CollisionShape3D
+	var ground := $GroundCollision as CollisionShape3D
 	if extension == null:
 		base_ground_faces = (ground.shape as ConcavePolygonShape3D).get_faces()
 		extension = MeshInstance3D.new()
@@ -118,41 +77,6 @@ func resize_land(size: Vector2i) -> void:
 	collision.set_faces(base_ground_faces + mesh.get_faces())
 	ground.shape = collision
 	extension.mesh = add_cliffs(mesh, outer, GROUND_MATERIAL)
-
-
-func build_harbor() -> void:
-	harbor_water = Rect2(-1.5 * cell_size, -0.5 * cell_size, land_bounds.end.x + 1.5 * cell_size + 1.0, 2.0 * cell_size)
-	var inlet := PackedVector2Array([
-		harbor_water.position, Vector2(harbor_water.end.x, harbor_water.position.y),
-		harbor_water.end, Vector2(harbor_water.position.x, harbor_water.end.y),
-	])
-	var shore := Geometry2D.clip_polygons(rim, inlet)[0]
-	if Geometry2D.is_polygon_clockwise(shore):
-		shore.reverse()
-	var sand := GROUND_MATERIAL.duplicate() as ShaderMaterial
-	sand.set_shader_parameter("grass_dark", Color("#77643d"))
-	sand.set_shader_parameter("grass_light", Color("#9c8454"))
-	var land := polygon_mesh(shore, sand)
-	$GroundCollision.shape = land.create_trimesh_shape()
-	var outline := PackedVector3Array()
-	for point in shore:
-		outline.append(Vector3(point.x, 0.0, point.y))
-	$RockAndGrass.mesh = add_cliffs(land, outline, sand)
-	var water := StandardMaterial3D.new()
-	water.albedo_color = Color("#3e8d87")
-	water.roughness = 0.38
-	$Water.mesh = polygon_mesh(Geometry2D.intersect_polygons(rim, inlet)[0], water)
-
-
-func polygon_mesh(outline: PackedVector2Array, material: Material) -> ArrayMesh:
-	var surface := SurfaceTool.new()
-	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for index in Geometry2D.triangulate_polygon(outline):
-		var point := outline[index]
-		surface.add_vertex(Vector3(point.x, 0.0, point.y))
-	surface.set_material(material)
-	surface.generate_normals()
-	return surface.commit()
 
 
 func add_cliffs(mesh: ArrayMesh, outer: PackedVector3Array, material: Material) -> ArrayMesh:
@@ -200,7 +124,8 @@ func land_triangle(surface: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, col
 		surface.add_vertex(point)
 
 
-func create_grid(builder: RefCounted) -> void:
+func create_grid(builder: Builder) -> void:
+	var cell_size := builder.catalog.cell_size
 	var lines := ImmediateMesh.new()
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color(0.19, 0.29, 0.17, 0.48)
@@ -229,28 +154,3 @@ func create_grid(builder: RefCounted) -> void:
 		grid.hide()
 		add_child(grid)
 	grid.mesh = lines
-
-
-func _process(delta: float) -> void:
-	if pet == null:
-		return
-	elapsed += delta
-	pet_pause -= delta
-	var stride := 0.0
-	if pet_pause <= 0.0:
-		var target: Vector3 = PET_ROUTE[pet_waypoint]
-		var direction := target - pet.position
-		direction.y = 0.0
-		if direction.length() <= delta * 0.64:
-			pet.position = target
-			pet_waypoint = (pet_waypoint + 1) % PET_ROUTE.size()
-			pet_pause = 1.2
-		else:
-			pet.position += direction.normalized() * delta * 0.64
-			pet.rotation.y = atan2(direction.x, direction.z)
-			pet_gait += delta * 11
-			stride = sin(pet_gait) * 0.42
-	pet.position.y = absf(stride) * 0.08
-	for i in range(4):
-		pet.get_node("Leg%d" % i).rotation.x = stride if i in [0, 3] else -stride
-	pet.get_node("Tail").rotation.y = sin(elapsed * 4.3) * 0.21

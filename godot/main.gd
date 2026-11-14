@@ -4,11 +4,7 @@ const Catalog = preload("res://godot/catalog.gd")
 const Builder = preload("res://godot/builder.gd")
 const Islands = preload("res://godot/islands.gd")
 const IslandView = preload("res://godot/island_view.gd")
-const ISLAND_SCENES := {
-	"flat": preload("res://assets/islands/flat.tscn"),
-	"cabin": preload("res://assets/islands/cabin.tscn"),
-	"harbor": preload("res://assets/islands/harbor.tscn"),
-}
+const FLAT_ISLAND = preload("res://assets/islands/flat.tscn")
 const HUD = preload("res://godot/hud.gd")
 const Player = preload("res://godot/player.gd")
 const Door = preload("res://godot/build_door.gd")
@@ -22,7 +18,7 @@ const WORLD_PICK_MASK := 19 # Terrain, solid structures and slab/ramp picking bo
 const PLAYER_MOUSE_SENSITIVITY := 0.003
 
 @onready var island_root: Node3D = $Island
-@onready var island := island_root.get_node_or_null("CabinIsland") as IslandView
+@onready var island: IslandView = $Island/FlatIsland
 @onready var clouds: Node3D = $Clouds
 @onready var structures: Node3D = $Structures
 @onready var player: Player = $Player
@@ -159,27 +155,21 @@ func show_island() -> void:
 	catalog = islands.active_catalog()
 	hud.set_catalog(catalog)
 	create_detail_grid()
-	if island == null or island.terrain != data.terrain or island.grid != null:
-		if island != null:
-			island.free()
-		var packed: PackedScene = ISLAND_SCENES[data.terrain]
-		island = packed.instantiate() as IslandView
+	if island.grid != null:
+		island_root.remove_child(island)
+		island.queue_free()
+		island = FLAT_ISLAND.instantiate() as IslandView
 		island_root.add_child(island)
-	island.setup(catalog)
 	if builder == null:
 		builder = Builder.new(catalog, structures)
 	else:
 		builder.catalog = catalog
-	builder.has_pond = data.terrain == "cabin"
-	builder.obstacles = island.obstacles
 	island.resize_land(Islands.island_size(data))
 	position_clouds()
 	builder.rim = island.rim
-	builder.harbor_water = island.harbor_water
 	builder.load_island(data.placements)
 	island.create_grid(builder)
-	player.reset_camera(PI if data.terrain == "harbor" else 0.0)
-	player.spawn = Vector3(2 * catalog.cell_size, 0.02, -2.8) if data.terrain == "harbor" else Vector3(0, 0.02, 2.8)
+	player.reset_camera()
 	player.respawn()
 	aim_overview()
 	set_mode("overview" if mode == "overview" else "player")
@@ -203,7 +193,6 @@ func expand_island() -> void:
 	island.resize_land(next)
 	position_clouds()
 	builder.rim = island.rim
-	builder.harbor_water = island.harbor_water
 	island.create_grid(builder)
 	aim_overview()
 
@@ -279,7 +268,7 @@ func export_save(id: String, path: String) -> void:
 
 
 func reset_view() -> void:
-	player.reset_camera(PI if island.terrain == "harbor" else 0.0)
+	player.reset_camera()
 	player.respawn()
 	orbit_yaw = ORBIT_YAW
 	orbit_pitch = ORBIT_PITCH
@@ -327,10 +316,6 @@ func toggle_build() -> void:
 		build_yaw = 0.42
 		build_pitch = -0.52
 		drone.position = Vector3(0.4, 1.1, 1.65)
-		if island.terrain == "harbor":
-			build_yaw = PI
-			build_pitch = -0.58
-			drone.position = Vector3(2 * catalog.cell_size, 1.1, -3 * catalog.cell_size)
 		aim_drone()
 		set_mode("build")
 	else:
@@ -557,9 +542,7 @@ func rotate_item() -> void:
 
 func remove_selected() -> void:
 	if mode == "build" and selected >= 0 and draft_item.is_empty():
-		if not builder.remove(selected):
-			hud.show_message("请先移走上方的物件")
-			return
+		builder.remove(selected)
 		clear_selection()
 		save()
 

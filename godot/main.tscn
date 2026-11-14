@@ -3,7 +3,7 @@
 [ext_resource type="Script" uid="uid://c5w8arxuslek5" path="res://godot/main.gd" id="1"]
 [ext_resource type="PackedScene" path="res://godot/player.tscn" id="2"]
 [ext_resource type="Script" uid="uid://b2ke6fyqerln3" path="res://godot/hud.gd" id="3"]
-[ext_resource type="PackedScene" path="res://assets/islands/cabin.tscn" id="4"]
+[ext_resource type="PackedScene" path="res://assets/islands/flat.tscn" id="4"]
 [ext_resource type="PackedScene" path="res://assets/islands/clouds.tscn" id="5"]
 
 [sub_resource type="Environment" id="IslandEnvironment"]
@@ -18,8 +18,7 @@ script = ExtResource("1")
 
 [node name="Island" type="Node3D" parent="." unique_id=2033613596]
 
-[node name="CabinIsland" parent="Island" unique_id=892570606 instance=ExtResource("4")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.015793324, -0.026532888, 0.007888675)
+[node name="FlatIsland" parent="Island" unique_id=892570606 instance=ExtResource("4")]
 
 [node name="Clouds" parent="." unique_id=1571396459 instance=ExtResource("5")]
 

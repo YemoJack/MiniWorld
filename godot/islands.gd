@@ -33,23 +33,8 @@ func _init(assets: Catalog, path: String = SAVE) -> void:
 			"floorCenters": true,
 			"islands": [
 				{"id": "flat", "name": "平坦岛", "terrain": "flat", "grid": GOLDEN_GRID, "wallHeightModules": true, "placements": []},
-				{"id": "cabin", "name": "木屋岛", "terrain": "cabin", "grid": GOLDEN_GRID, "wallHeightModules": true, "placements": []},
 			],
 		}
-	if state.get("defaultHarborAdded") != true and not state.islands.any(func(island: Dictionary): return island.terrain == "harbor"):
-		var id := "harbor"
-		while state.islands.any(func(island: Dictionary): return island.id == id):
-			id += "-default"
-		state.islands.append({
-			"id": id, "name": "港口岛", "terrain": "harbor", "grid": GOLDEN_GRID, "wallHeightModules": true,
-			"placements": [
-				{"item": "harborDock", "x": 2, "z": -2, "turns": 0, "elevation": 0},
-				{"item": "harborDock", "x": 2, "z": 2, "turns": 0, "elevation": 0},
-				{"item": "harborRope", "x": 3, "z": -1, "turns": 1, "elevation": 0},
-				{"item": "harborBarrel", "x": 0, "z": -2, "turns": 0, "elevation": 0},
-			],
-		})
-	state.defaultHarborAdded = true
 
 
 func read_file(path: String) -> Dictionary:
@@ -66,8 +51,7 @@ func read_file(path: String) -> Dictionary:
 			continue
 		var id: Variant = value.get("id")
 		var title: Variant = value.get("name")
-		var terrain: Variant = value.get("terrain")
-		if not id is String or id.is_empty() or id in ids or not title is String or terrain not in ["flat", "cabin", "harbor"] or not value.get("placements") is Array:
+		if not id is String or id.is_empty() or id in ids or not title is String or value.get("terrain") != "flat" or not value.get("placements") is Array:
 			continue
 		var placements: Array[Dictionary] = []
 		var grid := GOLDEN_GRID if value.get("grid") == GOLDEN_GRID else LEGACY_GRID
@@ -83,7 +67,7 @@ func read_file(path: String) -> Dictionary:
 		ids.append(id)
 		var size := island_size(value)
 		islands.append({
-			"id": id, "name": title, "terrain": terrain, "grid": grid, "placements": placements,
+			"id": id, "name": title, "terrain": "flat", "grid": grid, "placements": placements,
 			"wallHeightModules": grid == GOLDEN_GRID,
 			"width": size.x, "depth": size.y,
 		})
@@ -92,7 +76,7 @@ func read_file(path: String) -> Dictionary:
 	var active_id: Variant = parsed.get("activeId")
 	return {
 		"activeId": active_id if active_id in ids else ids[0], "islands": islands,
-		"floorCenters": true, "defaultHarborAdded": parsed.get("defaultHarborAdded") == true,
+		"floorCenters": true,
 	}
 
 

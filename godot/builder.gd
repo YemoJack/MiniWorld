@@ -16,9 +16,6 @@ const DOOR_PICK_LAYER := 64
 var catalog: Catalog
 var container: Node3D
 var rim: PackedVector2Array
-var has_pond := false
-var harbor_water: Rect2
-var obstacles: Array[AABB]
 var placements: Array
 var bodies: Array[StaticBody3D]
 var occupied: Dictionary
@@ -211,29 +208,12 @@ func touched_cells(p: Dictionary, bounds: AABB) -> Array[Vector2i]:
 	return result
 
 
-func within_island(location: Vector2i, allow_water := false, check_scenery := true) -> bool:
-	var midpoint := Vector2(location) * catalog.cell_size
-	if not allow_water and harbor_water.has_point(midpoint):
-		return false
-	var half := Vector2.ONE * catalog.cell_size / 2
-	var pond := Vector2(3.35, 0.35)
-	if has_pond and ((pond.clamp(midpoint - half, midpoint + half) - pond) / Vector2(2.15, 1.87)).length_squared() <= 1.0:
-		return false
-	if check_scenery:
-		for bounds in obstacles:
-			if Rect2(Vector2(bounds.position.x, bounds.position.z), Vector2(bounds.size.x, bounds.size.z)).intersects(Rect2(midpoint - half, Vector2.ONE * catalog.cell_size)):
-				return false
+func within_island(location: Vector2i) -> bool:
 	for dx in [-0.49, 0.49]:
 		for dz in [-0.49, 0.49]:
 			if not Geometry2D.is_point_in_polygon((Vector2(location) + Vector2(dx, dz)) * catalog.cell_size, rim):
 				return false
 	return true
-
-
-func can_anchor_cell(location: Vector2i, allow_water: bool, ignore: int) -> bool:
-	if not within_island(location, true, false):
-		return false
-	return allow_water or not harbor_water.has_point(Vector2(location) * catalog.cell_size) or has_floor(location, 0, ignore)
 
 
 func can_place(p: Dictionary, ignore: int = -1) -> bool:
@@ -254,23 +234,12 @@ func can_place(p: Dictionary, ignore: int = -1) -> bool:
 			if occupied.get(slot(shared_slot, edge_key(location, p.turns), p.elevation), ignore) != ignore:
 				return false
 	var bounds := placement_bounds(p, ignore)
-	var locations := touched_cells(p, bounds)
-	for scenery in obstacles:
-		if has_volume(bounds.intersection(scenery)):
-			return false
-	var harbor_deck: bool = p.elevation == 0 and catalog.items[p.item].has("deck_y")
-	var over_water := false
-	for location in locations:
-		over_water = over_water or harbor_water.has_point(Vector2(location) * catalog.cell_size)
-		if can_anchor_cell(location, harbor_deck, ignore):
+	for location in touched_cells(p, bounds):
+		if within_island(location):
 			continue
 		var facing: Vector2i = DIRECTIONS[p.get("edgeFacing", p.turns)]
-		if not is_edge or not can_anchor_cell(location + facing, false, ignore):
+		if not is_edge or not within_island(location + facing):
 			return false
-	if harbor_deck and over_water and not reaches_shore(locations):
-		return false
-	if not keeps_water_support(ignore, p):
-		return false
 	for i in range(placements.size()):
 		if i == ignore:
 			continue
@@ -593,50 +562,6 @@ func roof_edge_targets(item: String, hit: Dictionary, ignore: int) -> Array[Dict
 	return result
 
 
-func reaches_shore(locations: Array[Vector2i]) -> bool:
-	for location in locations:
-		if within_island(location):
-			return true
-		for direction: Vector2i in DIRECTIONS:
-			if within_island(location + direction):
-				return true
-	return false
-
-
-func keeps_water_support(index: int, replacement: Dictionary = {}) -> bool:
-	if index < 0 or not harbor_water.has_area():
-		return true
-	var previous: Dictionary = placements[index]
-	if layer(previous) != "floor" or previous.elevation != 0:
-		return true
-	var vacated: Array[Vector2i] = []
-	var kept: Array[Vector2i] = []
-	if not replacement.is_empty() and replacement.elevation == 0 and layer(replacement) == "floor":
-		kept = cells(replacement)
-	for location in cells(previous):
-		if harbor_water.has_point(Vector2(location) * catalog.cell_size) and location not in kept:
-			vacated.append(location)
-	if vacated.is_empty():
-		return true
-	for i in placements.size():
-		if i == index:
-			continue
-		var other: Dictionary = placements[i]
-		var edge := layer(other) in ["edge", "gable"]
-		var facing: Vector2i = DIRECTIONS[other.get("edgeFacing", other.turns)]
-		for location in touched_cells(other, placement_bounds(other)):
-			if edge:
-				var across := location + facing
-				if location not in vacated and across not in vacated:
-					continue
-				if location in kept or across in kept or can_anchor_cell(location, false, index) or can_anchor_cell(across, false, index):
-					continue
-			elif location not in vacated:
-				continue
-			return false
-	return true
-
-
 func stair_entrance_blocked(stairs: Dictionary, edge: Dictionary) -> bool:
 	var entrance := edge_key(stair_end(stairs, stairs.turns), stairs.turns)
 	return edge.elevation == stairs.elevation and slot("edge", entrance, stairs.elevation) in slots(edge)
@@ -864,10 +789,6 @@ func target(item: String, turns: int, hit: Dictionary, viewer: Vector3, snap: Di
 			p.elevation = surface_elevation(point.y + (SLAB / 2.0 if kind == "floor" else 0.0))
 		else:
 			return {}
-	elif hit.collider.has_meta("scenery"):
-		if normal.y <= 0.5:
-			return {}
-		p.elevation = surface_elevation(point.y + (SLAB / 2.0 if kind == "floor" else 0.0))
 	if kind == "ridge":
 		p.surfaceRidge = true
 	if kind == "gable" and not p.has("edgeFacing"):
@@ -901,8 +822,6 @@ func nearby_edge_targets(item: String, hit: Dictionary, viewer: Vector3) -> Arra
 			return candidates
 		aim_cell = aim_cell.clamp(cell(support), cell(support) + width(support) - Vector2i.ONE)
 		elevation = support.elevation
-	elif hit.collider.has_meta("scenery"):
-		return candidates
 	for side in 4:
 		var facing: Vector2i = DIRECTIONS[side]
 		var along: Vector2i = DIRECTIONS[(side + 1) % 4]
@@ -1314,12 +1233,9 @@ func set_wall_opening(index: int, opening: String) -> bool:
 	return true
 
 
-func remove(index: int) -> bool:
-	if not keeps_water_support(index):
-		return false
+func remove(index: int) -> void:
 	if bodies[index] != null:
 		bodies[index].free()
 	bodies.remove_at(index)
 	placements.remove_at(index)
 	sync()
-	return true
